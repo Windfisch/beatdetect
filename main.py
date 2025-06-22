@@ -6,6 +6,13 @@ import matplotlib.pyplot as plt
 import scipy.signal as ss
 from numpy import log, exp
 import time
+import argparse
+
+p = argparse.ArgumentParser()
+p.add_argument('file')
+p.add_argument('start')
+p.add_argument('--early-binning', action='store_true')
+args = p.parse_args()
 
 print_orig = print
 last_timestamp = None
@@ -50,6 +57,20 @@ def log_avg2(a, bins):
 	
 	return result
 
+def log_sum2(a, bins):
+	l = log(a.shape[1]) / bins
+	bins = int(bins)
+	result=np.zeros((a.shape[0], bins))
+
+	for i in range(bins):
+		begin = int(exp(i*l))
+		end = int(exp((i+1)*l))
+		if end <= begin: end=begin+1
+
+		result[:, i] = np.sum( a[:, begin:end], axis=1) / (end-begin)
+	
+	return result
+
 def overlapping_windows(data, window, step):
 	N = len(window)
 	step=int(step)
@@ -60,8 +81,8 @@ def overlapping_windows(data, window, step):
 
 print("reading file")
 
-data, samplerate = sf.read(sys.argv[1])
-t0=int(sys.argv[2])
+data, samplerate = sf.read(args.file)
+t0=int(args.start)
 
 print(len(data))
 print(data[1])
@@ -78,7 +99,7 @@ print(data.shape)
 
 
 print("trimming")
-data = data[t0*samplerate: (t0+5)*samplerate]
+data = data[t0*samplerate: (t0+15)*samplerate]
 
 timestep_desired = 1/1000
 samplestep = int(samplerate * timestep_desired)
@@ -89,13 +110,22 @@ print("windowing")
 
 x = overlapping_windows(data, np.hamming(samplerate/20), samplestep)
 
+fig, axs = plt.subplots(1,3)
+
 print("fft")
 y = np.absolute( np.fft.rfft(x, axis=1) )
 
+if args.early_binning:
+	print("binning")
+	bins = math.log(y.shape[1], 2)*12
+	y = log_sum2(y, bins)
+
 y = np.log10(y + 1e-4) * 20
 
+if not args.early_binning:
+	axs[0].set_xscale('log')
 
-
+axs[0].imshow(y, aspect='auto') #, vmax=1e+4, vmin=0)
 
 #y = ss.convolve2d(y, np.transpose([cfar_kernel( int(samplerate*0.01), int(samplerate*0.01) )]))
 print("convolving")
@@ -107,9 +137,12 @@ y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, my_kernel, 'valid'), axi
 print("maximum")
 y = np.fmax(y - 10, 0)
 
-print("binning")
-bins = math.log(y.shape[1], 2)*12
-y = log_avg2(y, bins)
+if not args.early_binning:
+	print("binning")
+	bins = math.log(y.shape[1], 2)*12
+	y = log_avg2(y, bins)
+
+axs[1].imshow(y, aspect='auto') #, vmax=1e+4, vmin=0)
 
 #y=np.apply_along_axis( lambda foo: find_local_maxima(foo), axis=0, arr=y) & (y>0)
 print("done")
@@ -127,11 +160,12 @@ print("quantile")
 vmin = 0
 
 print("imshow")
+
 #plt.imshow(y, aspect='auto')
 
 z = np.sum( y[:, 50:], axis=1)
 
-plt.plot(z)
+axs[2].plot(z)
 
 #t=np.linspace(0,y.shape[0], y.shape[0])
 #f=np.linspace(0,y.shape[1], y.shape[1])

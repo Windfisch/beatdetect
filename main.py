@@ -24,7 +24,7 @@ def print(*args, **kwargs):
 	print_orig(f'[+{diff*1000:7.2f}ms]', *args, **kwargs)
 
 def cfar_kernel(n, guard):
-	return np.array( [0]*n + [0]*guard + [1] + [0]*guard + [-1/n]*n )
+	return np.array( [1] + [0]*guard + [-1/n]*n )
 
 def find_local_maxima(a):
 	return (np.convolve(a, [1,-1])[:-1]>=0) & (np.convolve(a, [1,-1])[1:]<=0)
@@ -125,14 +125,18 @@ y = np.log10(y + 1e-4) * 20
 if not args.early_binning:
 	axs[0].set_xscale('log')
 
-axs[0].imshow(y, aspect='auto') #, vmax=1e+4, vmin=0)
+waterfall = y
 
 #y = ss.convolve2d(y, np.transpose([cfar_kernel( int(samplerate*0.01), int(samplerate*0.01) )]))
 print("convolving")
 #my_kernel = cfar_kernel( int(samplerate*0.1), int(samplerate*0.1) )
 
 my_kernel = cfar_kernel( int(0.2 / timestep_real), int(0.04 / timestep_real) )
+print("kernel len = ", len(my_kernel))
 y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, my_kernel, 'valid'), axis=0, arr=y )
+
+waterfall = waterfall[len(my_kernel):, :]
+axs[0].imshow(waterfall, aspect='auto') #, vmax=1e+4, vmin=0)
 
 print("maximum")
 y = np.fmax(y - 10, 0)

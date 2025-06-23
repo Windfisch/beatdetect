@@ -110,7 +110,9 @@ print("windowing")
 
 x = overlapping_windows(data, np.hamming(samplerate/20), samplestep)
 
-fig, axs = plt.subplots(1,3)
+fig, axs = plt.subplots(2,3)
+
+axs = np.ndarray.flatten(axs)
 
 print("fft")
 y = np.absolute( np.fft.rfft(x, axis=1) )
@@ -147,11 +149,51 @@ if not args.early_binning:
 	y = log_avg2(y, bins)
 
 axs[1].imshow(y, aspect='auto') #, vmax=1e+4, vmin=0)
+if args.early_binning:
+	axs[1].sharex(axs[0])
+axs[1].sharey(axs[0])
 
 #y=np.apply_along_axis( lambda foo: find_local_maxima(foo), axis=0, arr=y) & (y>0)
 print("done")
 
 #y = np.apply_along_axis( lambda foo: ss.correlate(foo, foo[0:int(1/timestep_real)], 'valid'), axis=0, arr=y)
+
+min_bpm = 60
+max_bpm = 300
+correlation_window = int(20/timestep_real)
+
+#corr_data = y[ -int((60/min_bpm) / timestep_real)-correlation_window:, :]
+#corr_reference = corr_data[-correlation_window:, :]
+#correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
+#	foo[ -int((60/min_bpm) / timestep_real)-correlation_window:],
+#	foo[-correlation_window:], 'valid')), axis=0, arr=y)
+correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
+	foo[ 0 : int((60/min_bpm) / timestep_real)+correlation_window],
+	foo[ int((60/min_bpm) / timestep_real) :int((60/min_bpm) / timestep_real)+correlation_window],
+	'valid')), axis=0, arr=y)
+
+correlation_1d = np.sum(correlation, axis=1)
+
+crop = int(60/max_bpm/timestep_real)
+
+peak_limit = (np.quantile(correlation_1d[crop:], 0.9))
+
+peaks = ss.find_peaks(correlation_1d, height=peak_limit)[0]
+tempi = [ (60/(t*timestep_real)) for t in peaks]
+print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
+
+tempo = tempi[0]
+periodicity = int(np.round(60/tempo/timestep_real))
+
+
+
+
+axs[3].imshow(correlation, aspect='auto')
+axs[4].set_xlim(xmin=0, xmax=np.max(correlation_1d[crop:]))
+axs[4].plot(correlation_1d, np.arange(len(correlation_1d)))
+axs[4].axvline(peak_limit)
+axs[4].axvline(peak_limit)
+axs[4].sharey(axs[3])
 
 #plt.xscale('log')
 #plt.imshow(y, aspect='auto', vmax=1e+4, vmin=0)
@@ -169,7 +211,13 @@ print("imshow")
 
 z = np.sum( y[:, 50:], axis=1)
 
-axs[2].plot(z)
+axs[2].plot(z, np.arange(len(z)))
+axs[2].sharey(axs[0])
+
+phase_window = int((5 / timestep_real) / periodicity)*periodicity
+phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0)
+
+axs[5].plot(phases)
 
 #t=np.linspace(0,y.shape[0], y.shape[0])
 #f=np.linspace(0,y.shape[1], y.shape[1])

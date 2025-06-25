@@ -209,7 +209,7 @@ print("imshow")
 
 #plt.imshow(y, aspect='auto')
 
-z = np.sum( y[:, 50:], axis=1)
+z = np.sum( y[:, 40:], axis=1)
 
 axs[2].plot(z, np.arange(len(z)))
 axs[2].sharey(axs[0])
@@ -218,6 +218,34 @@ phase_window = int((5 / timestep_real) / periodicity)*periodicity
 phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0)
 
 axs[5].plot(phases)
+
+
+
+#############
+
+t = np.argmax(phases)
+delta_t = periodicity
+
+half_window = int(periodicity/2 * 0.7)
+
+for i in range(31):
+	t += delta_t
+	if t < half_window: continue
+
+	window = z[t-half_window : t+half_window+1]
+
+	if np.sum(window) <= 0: continue
+	#print(t, half_window, window)
+
+	#mean = np.average(np.arange(len(window)), weights = window) - half_window + t
+	mean = np.argmax(window) - half_window + t
+	#std = np.sqrt(np.cov( np.arange(len(window)), aweights=window ))
+	std = mean-t
+	
+	print(f"expected = {t:6.1f}, found = {mean:6.1f} ± {std:7.2f}")
+	axs[2].axhline(mean)
+
+
 
 #t=np.linspace(0,y.shape[0], y.shape[0])
 #f=np.linspace(0,y.shape[1], y.shape[1])

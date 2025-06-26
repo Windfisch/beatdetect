@@ -178,11 +178,14 @@ crop = int(60/max_bpm/timestep_real)
 
 peak_limit = (np.quantile(correlation_1d[crop:], 0.9))
 
-peaks = ss.find_peaks(correlation_1d, height=peak_limit)[0]
+peaks = ss.find_peaks(correlation_1d, height=peak_limit, prominence=peak_limit*0.3)[0]
 tempi = [ (60/(t*timestep_real)) for t in peaks]
 print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
 
 tempo = tempi[0]
+
+if tempo > 240: tempo /= 2
+
 periodicity = int(np.round(60/tempo/timestep_real))
 
 
@@ -228,23 +231,47 @@ delta_t = periodicity
 
 half_window = int(periodicity/2 * 0.7)
 
+beats = []
 for i in range(31):
 	t += delta_t
-	if t < half_window: continue
+	if t < half_window:
+		continue
+	if t+half_window > len(z): break
 
 	window = z[t-half_window : t+half_window+1]
 
-	if np.sum(window) <= 0: continue
-	#print(t, half_window, window)
+	result = ss.find_peaks(window, height=0, distance = (0.01 / timestep_real), prominence=0.05 * np.max(window))
 
-	#mean = np.average(np.arange(len(window)), weights = window) - half_window + t
-	mean = np.argmax(window) - half_window + t
-	#std = np.sqrt(np.cov( np.arange(len(window)), aweights=window ))
-	std = mean-t
-	
-	print(f"expected = {t:6.1f}, found = {mean:6.1f} ± {std:7.2f}")
-	axs[2].axhline(mean)
+	indices = result[1]['peak_heights'].argsort()[::-1][0:5]
 
+	peaks = result[0][indices] + (t-half_window)
+	heights = result[1]['peak_heights'][indices]
+
+
+	print(f"peaks = {peaks}, heights = {heights}")
+	#print(result[1])
+
+	if len(peaks) == 0: continue
+	t = peaks[0]
+
+
+	beats.append(t)
+	axs[2].axhline(t, color='red')
+
+beats=np.array(beats)
+
+mean_beat_time = (beats[-1] - beats[0]) / (len(beats)-1)
+
+for i in range(31):
+	axs[2].axhline(beats[0] + i*mean_beat_time, color="green", ls='--')
+
+mean_bpm = (60/mean_beat_time/timestep_real)
+print(f"original tempo estimate = {tempo:.1f}bpm, actual mean tempo = {mean_bpm:.1f}")
+
+errors = np.abs((beats - (beats[0] + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
+errors_ms = errors*1000
+
+print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")
 
 
 #t=np.linspace(0,y.shape[0], y.shape[0])

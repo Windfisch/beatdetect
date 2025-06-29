@@ -4,6 +4,7 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.signal as ss
+import scipy.ndimage as sn
 from numpy import log, exp
 import time
 import argparse
@@ -12,6 +13,7 @@ p = argparse.ArgumentParser()
 p.add_argument('file')
 p.add_argument('start')
 p.add_argument('--early-binning', action='store_true')
+p.add_argument('--bpm')
 args = p.parse_args()
 
 print_orig = print
@@ -182,7 +184,11 @@ peaks = ss.find_peaks(correlation_1d, height=peak_limit, prominence=peak_limit*0
 tempi = [ (60/(t*timestep_real)) for t in peaks]
 print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
 
-tempo = tempi[0]
+if args.bpm is None:
+	tempo = tempi[0]
+else:
+	tempo = float(args.bpm)
+	print("Using --bpm override")
 
 if tempo > 240: tempo /= 2
 
@@ -196,6 +202,11 @@ axs[4].set_xlim(xmin=0, xmax=np.max(correlation_1d[crop:]))
 axs[4].plot(correlation_1d, np.arange(len(correlation_1d)))
 axs[4].axvline(peak_limit)
 axs[4].axvline(peak_limit)
+
+if args.bpm is not None:
+	axs[4].axhline(periodicity)
+	axs[3].axhline(periodicity)
+
 axs[4].sharey(axs[3])
 
 #plt.xscale('log')
@@ -214,12 +225,21 @@ print("imshow")
 
 z = np.sum( y[:, 40:], axis=1)
 
-axs[2].plot(z, np.arange(len(z)))
+axs[2].plot(z, np.arange(len(z)), color='orange')
+axs[2].plot(sn.gaussian_filter1d(z, 10), np.arange(len(z)), color='blue')
+z = sn.gaussian_filter1d(z, 10)
 axs[2].sharey(axs[0])
 
-phase_window = int((5 / timestep_real) / periodicity)*periodicity
-phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0)
+for tempo_ in tempi:
+	periodicity_ = int(np.round(60/tempo_/timestep_real))
+	phase_window = int((5 / timestep_real) / periodicity_)*periodicity_
+	n = phase_window / periodicity_
+	phases = z[:phase_window].reshape(-1, periodicity_).sum(axis=0) / n
+	axs[5].plot(phases, lw=1)
 
+phase_window = int((5 / timestep_real) / periodicity)*periodicity
+n = phase_window / periodicity
+phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
 axs[5].plot(phases)
 
 
@@ -227,6 +247,7 @@ axs[5].plot(phases)
 #############
 
 t = np.argmax(phases)
+phase = np.argmax(phases)
 delta_t = periodicity
 
 half_window = int(periodicity/2 * 0.7)
@@ -264,6 +285,7 @@ mean_beat_time = (beats[-1] - beats[0]) / (len(beats)-1)
 
 for i in range(31):
 	axs[2].axhline(beats[0] + i*mean_beat_time, color="green", ls='--')
+	axs[2].axhline(phase + i*periodicity, color="purple", ls='--')
 
 mean_bpm = (60/mean_beat_time/timestep_real)
 print(f"original tempo estimate = {tempo:.1f}bpm, actual mean tempo = {mean_bpm:.1f}")

@@ -143,7 +143,7 @@ waterfall = waterfall[len(my_kernel):, :]
 axs[0].imshow(waterfall, aspect='auto') #, vmax=1e+4, vmin=0)
 
 print("maximum")
-y = np.fmax(y - 10, 0)
+y = np.fmax(y - 0, 0)
 
 if not args.early_binning:
 	print("binning")

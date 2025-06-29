@@ -110,14 +110,14 @@ timestep_real = samplestep / samplerate
 print(f"using a timestep of {timestep_real*1000:.3f}ms")
 print("windowing")
 
-x = overlapping_windows(data, np.hamming(samplerate/20), samplestep)
+x = overlapping_windows(data, np.hamming(samplerate/40), samplestep)
 
 fig, axs = plt.subplots(2,3)
 
 axs = np.ndarray.flatten(axs)
 
 print("fft")
-y = np.absolute( np.fft.rfft(x, axis=1) )
+y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )
 
 if args.early_binning:
 	print("binning")

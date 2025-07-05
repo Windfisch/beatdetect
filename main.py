@@ -83,25 +83,28 @@ def overlapping_windows(data, window, step):
 
 print("reading file")
 
-data, samplerate = sf.read(args.file)
+data_orig, samplerate = sf.read(args.file)
 t0=int(args.start)
 
-print(len(data))
-print(data[1])
+print(len(data_orig))
+print(data_orig[1])
 print(samplerate)
 
 print("numpy-fying")
-data = np.array(data)
-
-print(data.shape)
-
-data = data[:,0]
-print(data.shape)
-
-
+data_orig = np.array(data_orig)
 
 print("trimming")
-data = data[t0*samplerate: (t0+20)*samplerate]
+data_orig = data_orig[t0*samplerate: (t0+20)*samplerate, :]
+print(data_orig.shape)
+
+
+
+
+data = data_orig[:,0]
+print(data.shape)
+
+
+
 
 timestep_desired = 1/1000
 samplestep = int(samplerate * timestep_desired)
@@ -110,7 +113,9 @@ timestep_real = samplestep / samplerate
 print(f"using a timestep of {timestep_real*1000:.3f}ms")
 print("windowing")
 
-x = overlapping_windows(data, np.hamming(samplerate/40), samplestep)
+fft_window_ms = 25
+
+x = overlapping_windows(data, np.hamming(int(fft_window_ms / 1000 * samplerate)), samplestep)
 
 fig, axs = plt.subplots(2,3)
 
@@ -331,7 +336,7 @@ t = np.argmax(phases)
 phase = np.argmax(phases)
 delta_t = periodicity
 
-trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [])]
+trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [(t, False)])]
 
 half_window = int(periodicity/2 * 0.7)
 
@@ -394,8 +399,41 @@ errors = np.abs(([b for b,f in beats] - (beats[0][0] + np.arange(len(beats)) * m
 errors_ms = errors*1000
 
 print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")
+print(f"lambda = {lam}")
+
+print("writing out.mp3")
+
+data_debug = data_orig[:,:]
+
+beep1_freq = 880*2
+beep2_freq = 880
+beep_ms = 50
+beep_fadein_ms = 0.1
+beep_fadeout_ms = 44
+
+beep1 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep1_freq )
+beep2 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep2_freq )
+
+fadein = np.arange(0, 1, beep_fadein_ms/1000*samplerate)
+fadeout = np.arange(1,0, -beep_fadeout_ms/1000*samplerate)
+beep_window = np.concat([fadein, np.ones(len(beep1)-len(fadein)-len(fadeout)), fadeout])
+beep1 = beep1 * beep_window * 0.5
+beep2 = beep2 * beep_window * 0.5
+
+beeps = [beep2, beep2, beep2, beep2]
 
 
+for i, (t,f) in enumerate(beats):
+	beep = beeps[(i+1)%4]
+	t = int((t * timestep_real + fft_window_ms/1000/2) * samplerate)
+	if t < 0: continue
+	if t + len(beep) >= data_debug.shape[0]: continue
+	print(t, data_debug.shape)
+	data_debug[t:(t+len(beep)), :] += beep.reshape(-1, 1)
+
+data_debug /= (1 + max(beep))
+
+sf.write("out.mp3", data_debug, samplerate)
 #t=np.linspace(0,y.shape[0], y.shape[0])
 #f=np.linspace(0,y.shape[1], y.shape[1])
 

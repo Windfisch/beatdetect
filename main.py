@@ -101,7 +101,7 @@ print(data.shape)
 
 
 print("trimming")
-data = data[t0*samplerate: (t0+15)*samplerate]
+data = data[t0*samplerate: (t0+20)*samplerate]
 
 timestep_desired = 1/1000
 samplestep = int(samplerate * timestep_desired)
@@ -150,7 +150,7 @@ if not args.early_binning:
 	bins = math.log(y.shape[1], 2)*12
 	y = log_avg2(y, bins)
 
-axs[1].imshow(y, aspect='auto') #, vmax=1e+4, vmin=0)
+axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8)
 if args.early_binning:
 	axs[1].sharex(axs[0])
 axs[1].sharey(axs[0])
@@ -246,51 +246,151 @@ axs[5].plot(phases)
 
 #############
 
+
+# assume peak prominences p are distributed with a density of f(p)
+# i.e. P(p <= x) = integral of f(t)dt from -inf to x.
+#
+# Then if we have a peak with prominence p, what's the probability of this peak being caused by the
+# distribution (i.e. a "noisy" one, not a real peak)?
+#
+# Hypothesis Hi: peak i is the beat
+# Hypothesis H-: none of the peaks is the beat
+#
+# Let's say p_i := (loc_i, prom_i) is the list of our detected peaks and p = (p_1, ..., p_n)
+# P( p | Hi ) ~  product(f(prom_k)) / f(prom_i) * g(loc_i)
+# thus:
+# P( Hi | p ) = P ( p | Hi )
+
+print("Running statistics on the peaks")
+#z=z[0:8000]
+result = ss.find_peaks(z, height=0, distance = (0.01 / timestep_real), prominence=0)
+prominences = sorted(result[1]['prominences'])[::-1]
+lam = 1/np.mean(prominences)
+
+fig = plt.figure()
+ax = fig.add_subplot()
+ax.plot(prominences, np.arange(len(prominences)))
+ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(- (lam * np.arange(max(prominences)))**0.8 ))
+ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(-lam * np.arange(max(prominences)) ))
+
+
+
+serial_number = 1
+
+class BeatTracker:
+	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
+	def __init__(self, parent, sigma, lam, beat_loc, time_per_beat, confidence, beats):
+		global serial_number
+		self.sigma = sigma
+		self.parent = parent
+		self.serial = serial_number
+		serial_number+=1
+		self.lam = lam
+		self.beat_loc = beat_loc
+		self.time_per_beat = time_per_beat
+		self.confidence = confidence
+		self.beats = beats[:]
+		if confidence > 0.05:
+			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc}")
+
+	def search_interval(self):
+		expected_loc = self.beat_loc + self.time_per_beat
+		return (expected_loc - 300, expected_loc+300)
+
+	def next_beat(self, peak_locs, peak_prominences):
+		expected_loc = self.beat_loc + self.time_per_beat
+		peaks = []
+
+		for loc, prom in zip(peak_locs, peak_prominences):
+			t_diff = loc - expected_loc
+			relevance = math.exp(-0.5*(t_diff/self.sigma)**2) / (self.lam * math.exp(-self.lam * prom))
+			peaks.append((relevance, loc, True))
+
+		P_HAVEPEAK = 0.03
+		peaks.append((1/P_HAVEPEAK-1, expected_loc, False))
+
+		relevance_sum = sum([r for r,l,f in peaks])
+		peaks = [(r/relevance_sum, l, f) for r,l,f in peaks]
+		peaks = sorted(peaks)[::-1]
+
+		alpha = 0.1
+		confidence = self.confidence * (1-alpha) + 1 * alpha
+
+		return [BeatTracker(self.serial, self.sigma, self.lam, loc, self.time_per_beat, confidence * rel, self.beats + [(loc, found)]) for (rel, loc, found) in peaks]
+
+def get_search_interval(trackers):
+	lo = 999999
+	hi = -1
+	for t in trackers:
+		l, h = t.search_interval()
+		lo = min(lo, l)
+		hi = max(hi, h)
+	return (lo, hi)
+
 t = np.argmax(phases)
 phase = np.argmax(phases)
 delta_t = periodicity
 
+trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [])]
+
 half_window = int(periodicity/2 * 0.7)
 
 beats = []
-for i in range(31):
-	t += delta_t
-	if t < half_window:
-		continue
-	if t+half_window > len(z): break
+for i in range(99):
+	window_start, window_end = get_search_interval(trackers)
+	window_start = min(max(window_start, 0), len(z))
+	window_end = min(max(window_end, 0), len(z))
+	print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
+	window = z[window_start : window_end]
 
-	window = z[t-half_window : t+half_window+1]
+	if len(window) < 10: break
 
 	result = ss.find_peaks(window, height=0, distance = (0.01 / timestep_real), prominence=0.05 * np.max(window))
 
-	indices = result[1]['peak_heights'].argsort()[::-1][0:5]
+	peaks = result[0] + window_start
+	heights = result[1]['peak_heights']
 
-	peaks = result[0][indices] + (t-half_window)
-	heights = result[1]['peak_heights'][indices]
-
-
-	print(f"peaks = {peaks}, heights = {heights}")
-	#print(result[1])
+	#print(f"peaks = {peaks}, heights = {heights}")
+	print(f"found {len(peaks)} peaks")
 
 	if len(peaks) == 0: continue
-	t = peaks[0]
+
+	trackers_new = []
+	for tr in trackers:
+		trackers_new += tr.next_beat(peaks, heights)
+
+	print("------------------------------------")
+
+	trackers = trackers_new
+
+	trackers.sort(key = lambda t : -t.confidence)
+
+	trackers = trackers[0:10]
+	print("confidences: ", ", ".join(["%5f" % t.confidence for t in trackers]))
+
+for t in trackers:
+	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)
+	mbpm = (60/mbt/timestep_real)
+	print("tracker suggests %.2f bpm" % mbpm)
+
+beats=np.array( trackers[0].beats )
+
+for t,f in beats:
+	axs[2].axhline(t, color='red', ls='-' if f else '-.')
+
+print("%.2f%%" % (len([1 for t,f in beats if f]) / len(beats)*100))
 
 
-	beats.append(t)
-	axs[2].axhline(t, color='red')
-
-beats=np.array(beats)
-
-mean_beat_time = (beats[-1] - beats[0]) / (len(beats)-1)
+mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 
 for i in range(31):
-	axs[2].axhline(beats[0] + i*mean_beat_time, color="green", ls='--')
+	#axs[2].axhline(beats[0][0] + i*mean_beat_time, color="green", ls='--')
 	axs[2].axhline(phase + i*periodicity, color="purple", ls='--')
 
 mean_bpm = (60/mean_beat_time/timestep_real)
 print(f"original tempo estimate = {tempo:.1f}bpm, actual mean tempo = {mean_bpm:.1f}")
 
-errors = np.abs((beats - (beats[0] + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
+errors = np.abs(([b for b,f in beats] - (beats[0][0] + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
 errors_ms = errors*1000
 
 print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")

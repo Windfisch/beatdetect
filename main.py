@@ -14,6 +14,7 @@ p.add_argument('file')
 p.add_argument('start')
 p.add_argument('--early-binning', action='store_true')
 p.add_argument('--bpm')
+p.add_argument('--offbeat', action='store_true')
 args = p.parse_args()
 
 print_orig = print
@@ -333,6 +334,11 @@ def get_search_interval(trackers):
 	return (lo, hi)
 
 t = np.argmax(phases)
+
+if args.offbeat:
+	print("offbeat foo")
+	t += int(periodicity/2)
+
 phase = np.argmax(phases)
 delta_t = periodicity
 

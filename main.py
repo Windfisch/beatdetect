@@ -302,7 +302,7 @@ class BeatTracker:
 		self.confidence = confidence
 		self.beats = beats[:]
 		if confidence > 0.05:
-			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc}")
+			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, tpb = {self.time_per_beat:.2f}")
 
 	def search_interval(self):
 		expected_loc = self.beat_loc + self.time_per_beat
@@ -327,7 +327,8 @@ class BeatTracker:
 		alpha = 0.1
 		confidence = self.confidence * (1-alpha) + 1 * alpha
 
-		return [BeatTracker(self.serial, self.sigma, self.lam, loc, self.time_per_beat, confidence * rel, self.beats + [(loc, found)]) for (rel, loc, found) in peaks]
+		tpb_alpha = 0.8
+		return [BeatTracker(self.serial, self.sigma, self.lam, loc, tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0]), confidence * rel, self.beats + [(loc, found)]) for (rel, loc, found) in peaks]
 
 def get_search_interval(trackers):
 	lo = 999999
@@ -336,12 +337,11 @@ def get_search_interval(trackers):
 		l, h = t.search_interval()
 		lo = min(lo, l)
 		hi = max(hi, h)
-	return (lo, hi)
+	return (int(lo), int(hi))
 
 t = np.argmax(phases)
 
 if args.offbeat:
-	print("offbeat foo")
 	t += int(periodicity/2)
 
 phase = np.argmax(phases)
@@ -352,14 +352,14 @@ trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [(t, False)])]
 half_window = int(periodicity/2 * 0.7)
 
 beats = []
-for i in range(99):
+for i in range(9999):
 	window_start, window_end = get_search_interval(trackers)
 	window_start = min(max(window_start, 0), len(z))
 	window_end = min(max(window_end, 0), len(z))
 	print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
 	window = z[window_start : window_end]
 
-	if len(window) < 10: break
+	if len(window) < 100: break
 
 	result = ss.find_peaks(window, height=0, distance = (0.01 / timestep_real), prominence=0.05 * np.max(window))
 
@@ -427,6 +427,21 @@ errors_ms = errors*1000
 
 print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")
 print(f"lambda = {lam}")
+
+
+fig, axs = plt.subplots(1,1)
+ax=axs
+
+bpms = []
+ts = []
+for ((t1,_), (t2,_)) in zip(beats, beats[1:]):
+	t1 = t1 * timestep_real
+	t2 = t2 * timestep_real
+	bpm = 60 / (t2-t1)
+	ts.append((t1+t2)/2)
+	bpms.append(bpm)
+
+ax.plot(ts, bpms)
 
 print("writing out.mp3")
 

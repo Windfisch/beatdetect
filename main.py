@@ -375,6 +375,22 @@ for i in range(99):
 
 	trackers = trackers_new
 
+	trackers.sort(key = lambda t : (t.beats[-1][0], -t.confidence))
+
+	trackers_dedup = []
+	last_loc = None
+	for t in trackers:
+		loc = t.beats[-1][0]
+		if loc != last_loc:
+			trackers_dedup.append(t)
+		else:
+			trackers_dedup[-1].confidence = 1 - (1-trackers_dedup[-1].confidence) * (1-t.confidence)
+		last_loc = loc
+	
+	print(f"deduplication removed {len(trackers)-len(trackers_dedup)} of {len(trackers)} trackers")
+	trackers = trackers_dedup
+
+
 	trackers.sort(key = lambda t : -t.confidence)
 
 	trackers = trackers[0:10]

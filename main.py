@@ -121,9 +121,10 @@ fft_window_ms = 25
 x = overlapping_windows(data, np.hamming(int(fft_window_ms / 1000 * samplerate)), samplestep)
 time_fixup_s += fft_window_ms/1000/2
 
-fig, axs = plt.subplots(2,3)
+fig, axs1 = plt.subplots(1,3)
+fig, axs2 = plt.subplots(1,3)
 
-axs = np.ndarray.flatten(axs)
+axs = np.ndarray.flatten(np.concat([axs1,axs2]))
 
 print("fft")
 y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )

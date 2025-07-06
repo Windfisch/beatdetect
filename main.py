@@ -111,6 +111,7 @@ print(data.shape)
 timestep_desired = 1/1000
 samplestep = int(samplerate * timestep_desired)
 timestep_real = samplestep / samplerate
+time_fixup_s = 0
 
 print(f"using a timestep of {timestep_real*1000:.3f}ms")
 print("windowing")
@@ -118,6 +119,7 @@ print("windowing")
 fft_window_ms = 25
 
 x = overlapping_windows(data, np.hamming(int(fft_window_ms / 1000 * samplerate)), samplestep)
+time_fixup_s += fft_window_ms/1000/2
 
 fig, axs = plt.subplots(2,3)
 
@@ -147,6 +149,7 @@ print("kernel len = ", len(my_kernel))
 y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, my_kernel, 'valid'), axis=0, arr=y )
 
 waterfall = waterfall[len(my_kernel):, :]
+time_fixup_s += len(my_kernel)*timestep_real
 axs[0].imshow(waterfall, aspect='auto') #, vmax=1e+4, vmin=0)
 
 print("maximum")
@@ -447,7 +450,8 @@ beep2 = beep2 * beep_window * 0.5
 
 for i, (t,f) in enumerate(beats):
 	beep = beep1 if f else beep2
-	t = int((t * timestep_real + fft_window_ms/1000/2) * samplerate)
+	print("t = ", t)
+	t = int((t * timestep_real + time_fixup_s) * samplerate)
 	if t < 0: continue
 	if t + len(beep) >= data_debug.shape[0]: continue
 	data_debug[t:(t+len(beep)), :] += beep.reshape(-1, 1)

@@ -12,9 +12,10 @@ import argparse
 p = argparse.ArgumentParser()
 p.add_argument('file')
 p.add_argument('start')
-p.add_argument('--early-binning', action='store_true')
+p.add_argument('--late-binning', action='store_true')
 p.add_argument('--bpm')
 p.add_argument('--offbeat', action='store_true')
+p.add_argument('--duration', type=float, default=20)
 args = p.parse_args()
 
 print_orig = print
@@ -95,7 +96,7 @@ print("numpy-fying")
 data_orig = np.array(data_orig)
 
 print("trimming")
-data_orig = data_orig[t0*samplerate: (t0+20)*samplerate, :]
+data_orig = data_orig[int(t0*samplerate): int((t0+args.duration)*samplerate), :]
 print(data_orig.shape)
 
 
@@ -125,14 +126,14 @@ axs = np.ndarray.flatten(axs)
 print("fft")
 y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )
 
-if args.early_binning:
+if not args.late_binning:
 	print("binning")
 	bins = math.log(y.shape[1], 2)*12
 	y = log_sum2(y, bins)
 
 y = np.log10(y + 1e-4) * 20
 
-if not args.early_binning:
+if args.late_binning:
 	axs[0].set_xscale('log')
 
 waterfall = y
@@ -151,13 +152,13 @@ axs[0].imshow(waterfall, aspect='auto') #, vmax=1e+4, vmin=0)
 print("maximum")
 y = np.fmax(y - 0, 0)
 
-if not args.early_binning:
+if args.late_binning:
 	print("binning")
 	bins = math.log(y.shape[1], 2)*12
 	y = log_avg2(y, bins)
 
 axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8)
-if args.early_binning:
+if not args.late_binning:
 	axs[1].sharex(axs[0])
 axs[1].sharey(axs[0])
 
@@ -411,14 +412,15 @@ print("writing out.mp3")
 
 data_debug = data_orig[:,:]
 
-beep1_freq = 880*2
-beep2_freq = 880
-beep_ms = 50
+beep1_freq = 880
+beep2_freq = 880 * 3/2
+beep_ms = 40
 beep_fadein_ms = 0.1
-beep_fadeout_ms = 44
+beep_fadeout_ms = 10
 
 beep1 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep1_freq )
 beep2 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep2_freq )
+beep2 = beep2 + beep1
 
 fadein = np.arange(0, 1, beep_fadein_ms/1000*samplerate)
 fadeout = np.arange(1,0, -beep_fadeout_ms/1000*samplerate)
@@ -426,15 +428,12 @@ beep_window = np.concat([fadein, np.ones(len(beep1)-len(fadein)-len(fadeout)), f
 beep1 = beep1 * beep_window * 0.5
 beep2 = beep2 * beep_window * 0.5
 
-beeps = [beep2, beep2, beep2, beep2]
-
 
 for i, (t,f) in enumerate(beats):
-	beep = beeps[(i+1)%4]
+	beep = beep1 if f else beep2
 	t = int((t * timestep_real + fft_window_ms/1000/2) * samplerate)
 	if t < 0: continue
 	if t + len(beep) >= data_debug.shape[0]: continue
-	print(t, data_debug.shape)
 	data_debug[t:(t+len(beep)), :] += beep.reshape(-1, 1)
 
 data_debug /= (1 + max(beep))

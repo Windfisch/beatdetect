@@ -397,7 +397,7 @@ for i in range(9999):
 
 	trackers.sort(key = lambda t : -t.confidence)
 
-	trackers = trackers[0:10]
+	trackers = trackers[0:3]
 	print("confidences: ", ", ".join(["%5f" % t.confidence for t in trackers]))
 
 for t in trackers:

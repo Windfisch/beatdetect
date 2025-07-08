@@ -355,7 +355,11 @@ trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [(t, False)])]
 
 half_window = int(periodicity/2 * 0.7)
 
+_, trackerax = plt.subplots(1,1)
+
 beats = []
+scatter_xs_old = []
+scatter_ys_old = []
 for i in range(9999):
 	window_start, window_end = get_search_interval(trackers)
 	window_start = min(max(window_start, 0), len(z))
@@ -407,6 +411,22 @@ for i in range(9999):
 
 
 	print("confidences: ", ", ".join(["%5f" % t.confidence for t in trackers]))
+
+	trackerax.clear()
+	trackerax.set_xlim(0, args.duration / timestep_real)
+	trackerax.set_ylim(0, 1)
+	scatter_xs = []
+	scatter_ys = []
+	for t in trackers:
+		scatter_xs += [t for t,f in t.beats]
+		scatter_ys += [t.confidence] * len(t.beats)
+
+	trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
+	trackerax.scatter(scatter_xs, scatter_ys, color='red')
+	scatter_xs_old = scatter_xs
+	scatter_ys_old = scatter_ys
+	#plt.waitforbuttonpress()
+	#plt.ginput()
 
 for t in trackers:
 	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)

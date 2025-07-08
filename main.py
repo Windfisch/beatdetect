@@ -328,7 +328,7 @@ class BeatTracker:
 		peaks = [(r/relevance_sum, l, f) for r,l,f in peaks]
 		peaks = sorted(peaks)[::-1]
 
-		alpha = 0.1
+		alpha = 0
 		confidence = self.confidence * (1-alpha) + 1 * alpha
 
 		tpb_alpha = 0.8
@@ -392,16 +392,20 @@ for i in range(9999):
 		if loc != last_loc:
 			trackers_dedup.append(t)
 		else:
-			trackers_dedup[-1].confidence = 1 - (1-trackers_dedup[-1].confidence) * (1-t.confidence)
+			trackers_dedup[-1].confidence += trackers_dedup[-1].confidence
 		last_loc = loc
 	
 	print(f"deduplication removed {len(trackers)-len(trackers_dedup)} of {len(trackers)} trackers")
 	trackers = trackers_dedup
 
-
 	trackers.sort(key = lambda t : -t.confidence)
 
 	trackers = trackers[0:3]
+	
+	sum_conf = sum([t.confidence for t in trackers])
+	for t in trackers: t.confidence /= sum_conf
+
+
 	print("confidences: ", ", ".join(["%5f" % t.confidence for t in trackers]))
 
 for t in trackers:

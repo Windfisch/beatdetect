@@ -129,6 +129,8 @@ axs = np.ndarray.flatten(np.concat([axs1,axs2]))
 print("fft")
 y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )
 
+y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1)
+
 if not args.late_binning:
 	print("binning")
 	bins = math.log(y.shape[1], 2)*12

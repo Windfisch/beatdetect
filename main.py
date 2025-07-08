@@ -199,11 +199,13 @@ print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
 
 if args.bpm is None:
 	tempo = tempi[0]
+	if tempo > 240: tempo /= 2
 else:
 	tempo = float(args.bpm)
 	print("Using --bpm override")
 
-if tempo > 240: tempo /= 2
+print(f"Using tempo {tempo}")
+
 
 periodicity = int(np.round(60/tempo/timestep_real))
 

@@ -2,7 +2,6 @@ import soundfile as sf
 import math
 import sys
 import numpy as np
-import matplotlib.pyplot as plt
 import scipy.signal as ss
 import scipy.ndimage as sn
 from numpy import log, exp
@@ -17,7 +16,11 @@ p.add_argument('--bpm')
 p.add_argument('--offbeat', action='store_true')
 p.add_argument('--duration', type=float, default=20)
 p.add_argument('--step-by-step', action='store_true', default=False)
+p.add_argument('--plot', action='store_true', default=False)
 args = p.parse_args()
+
+if args.plot:
+	import matplotlib.pyplot as plt
 
 print_orig = print
 last_timestamp = None
@@ -122,10 +125,12 @@ fft_window_ms = 25
 x = overlapping_windows(data, np.hamming(int(fft_window_ms / 1000 * samplerate)), samplestep)
 time_fixup_s += fft_window_ms/1000/2
 
-fig, axs1 = plt.subplots(1,3)
-fig, axs2 = plt.subplots(1,3)
-
-axs = np.ndarray.flatten(np.concat([axs1,axs2]))
+if args.plot:
+	fig, axs1 = plt.subplots(1,3)
+	fig, axs2 = plt.subplots(1,3)
+	axs = np.ndarray.flatten(np.concat([axs1,axs2]))
+	if args.late_binning:
+		axs[0].set_xscale('log')
 
 print("fft")
 y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )
@@ -139,8 +144,6 @@ if not args.late_binning:
 
 y = np.log10(y + 1e-4) * 20
 
-if args.late_binning:
-	axs[0].set_xscale('log')
 
 waterfall = y
 
@@ -148,13 +151,12 @@ waterfall = y
 print("convolving")
 #my_kernel = cfar_kernel( int(samplerate*0.1), int(samplerate*0.1) )
 
-my_kernel = cfar_kernel( int(0.2 / timestep_real), int(0.04 / timestep_real) )
+my_kernel = cfar_kernel( int(0.05 / timestep_real), int(0.01 / timestep_real) )
 print("kernel len = ", len(my_kernel))
 y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, my_kernel, 'valid'), axis=0, arr=y )
 
 waterfall = waterfall[len(my_kernel):, :]
 time_fixup_s += len(my_kernel)*timestep_real
-axs[0].imshow(waterfall, aspect='auto') #, vmax=1e+4, vmin=0)
 
 print("maximum")
 y = np.fmax(y - 0, 0)
@@ -164,10 +166,13 @@ if args.late_binning:
 	bins = math.log(y.shape[1], 2)*12
 	y = log_avg2(y, bins)
 
-axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8)
-if not args.late_binning:
-	axs[1].sharex(axs[0])
-axs[1].sharey(axs[0])
+if args.plot:
+	axs[0].imshow(waterfall, aspect='auto') #, vmax=1e+4, vmin=0)
+
+	axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8)
+	if not args.late_binning:
+		axs[1].sharex(axs[0])
+	axs[1].sharey(axs[0])
 
 #y=np.apply_along_axis( lambda foo: find_local_maxima(foo), axis=0, arr=y) & (y>0)
 print("done")
@@ -211,52 +216,53 @@ print(f"Using tempo {tempo}")
 periodicity = int(np.round(60/tempo/timestep_real))
 
 
-
-
-axs[3].imshow(correlation, aspect='auto')
-axs[4].set_xlim(xmin=0, xmax=np.max(correlation_1d[crop:]))
-axs[4].plot(correlation_1d, np.arange(len(correlation_1d)))
-axs[4].axvline(peak_limit)
-axs[4].axvline(peak_limit)
-
-if args.bpm is not None:
-	axs[4].axhline(periodicity)
-	axs[3].axhline(periodicity)
-
-axs[4].sharey(axs[3])
-
-#plt.xscale('log')
-#plt.imshow(y, aspect='auto', vmax=1e+4, vmin=0)
-
-print("quantile")
-
-#vmax = np.quantile(y, 0.999, method='inverted_cdf')
-#vmax2 = np.quantile(y, 0.99, method='inverted_cdf')
-#print(vmax, vmax2)
-vmin = 0
-
-print("imshow")
-
-#plt.imshow(y, aspect='auto')
-
 z = np.sum( y[:, 40:], axis=1)
 
-axs[2].plot(z, np.arange(len(z)), color='orange')
-axs[2].plot(sn.gaussian_filter1d(z, 10), np.arange(len(z)), color='blue')
-z = sn.gaussian_filter1d(z, 10)
-axs[2].sharey(axs[0])
+if args.plot:
+	axs[3].imshow(correlation, aspect='auto')
+	axs[4].set_xlim(xmin=0, xmax=np.max(correlation_1d[crop:]))
+	axs[4].plot(correlation_1d, np.arange(len(correlation_1d)))
+	axs[4].axvline(peak_limit)
+	axs[4].axvline(peak_limit)
 
-for tempo_ in tempi:
-	periodicity_ = int(np.round(60/tempo_/timestep_real))
-	phase_window = int((5 / timestep_real) / periodicity_)*periodicity_
-	n = phase_window / periodicity_
-	phases = z[:phase_window].reshape(-1, periodicity_).sum(axis=0) / n
-	axs[5].plot(phases, lw=1)
+	if args.bpm is not None:
+		axs[4].axhline(periodicity)
+		axs[3].axhline(periodicity)
+
+	axs[4].sharey(axs[3])
+
+	#plt.xscale('log')
+	#plt.imshow(y, aspect='auto', vmax=1e+4, vmin=0)
+
+
+	#vmax = np.quantile(y, 0.999, method='inverted_cdf')
+	#vmax2 = np.quantile(y, 0.99, method='inverted_cdf')
+	#print(vmax, vmax2)
+	vmin = 0
+
+	print("imshow")
+
+	#plt.imshow(y, aspect='auto')
+
+
+	axs[2].plot(z, np.arange(len(z)), color='orange')
+	axs[2].plot(sn.gaussian_filter1d(z, 10), np.arange(len(z)), color='blue')
+	axs[2].sharey(axs[0])
+
+z = sn.gaussian_filter1d(z, 10) # FIXME do we really want this?
+
+if args.plot:
+	for tempo_ in tempi:
+		periodicity_ = int(np.round(60/tempo_/timestep_real))
+		phase_window = int((5 / timestep_real) / periodicity_)*periodicity_
+		n = phase_window / periodicity_
+		phases = z[:phase_window].reshape(-1, periodicity_).sum(axis=0) / n
+		axs[5].plot(phases, lw=1)
 
 phase_window = int((5 / timestep_real) / periodicity)*periodicity
 n = phase_window / periodicity
 phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
-axs[5].plot(phases)
+if args.plot: axs[5].plot(phases)
 
 
 
@@ -283,11 +289,12 @@ result = ss.find_peaks(z, height=0, distance = (0.01 / timestep_real), prominenc
 prominences = sorted(result[1]['prominences'])[::-1]
 lam = 1/np.mean(prominences)
 
-fig = plt.figure()
-ax = fig.add_subplot()
-ax.plot(prominences, np.arange(len(prominences)))
-ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(- (lam * np.arange(max(prominences)))**0.8 ))
-ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(-lam * np.arange(max(prominences)) ))
+if args.plot:
+	fig = plt.figure()
+	ax = fig.add_subplot()
+	ax.plot(prominences, np.arange(len(prominences)))
+	ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(- (lam * np.arange(max(prominences)))**0.8 ))
+	ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(-lam * np.arange(max(prominences)) ))
 
 
 
@@ -358,8 +365,9 @@ trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [(t, False)])]
 
 half_window = int(periodicity/2 * 0.7)
 
-_, trackerax = plt.subplots(1,1)
-trackerax2 = trackerax.twinx()
+if args.plot:
+	_, trackerax = plt.subplots(1,1)
+	trackerax2 = trackerax.twinx()
 
 beats = []
 greedy_beats = []
@@ -433,31 +441,33 @@ for i in range(9999):
 
 	print("confidences: ", ", ".join(["%5f" % t.confidence for t in trackers]))
 
-	trackerax.clear()
-	trackerax.set_xlim(0, args.duration / timestep_real)
-	trackerax.set_ylim(-0.05, 1.05)
-	trackerax2.clear()
-	trackerax2.set_xlim(0, args.duration / timestep_real)
-	trackerax2.set_ylim(-0.15, 1.15)
-
 	if trackers[0].used == False:
 		greedy_beats.append(trackers[0].beats[-1] + (trackers[0].confidence,))
 		trackers[0].used = True
-	trackerax2.scatter([t for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
-	trackerax2.scatter([t for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
 
-	scatter_xs = []
-	scatter_ys = []
-	for t in trackers:
-		scatter_xs += [t for t,f in t.beats]
-		scatter_ys += [t.confidence] * len(t.beats)
+	if args.plot:
+		trackerax.clear()
+		trackerax.set_xlim(0, args.duration / timestep_real)
+		trackerax.set_ylim(-0.05, 1.05)
+		trackerax2.clear()
+		trackerax2.set_xlim(0, args.duration / timestep_real)
+		trackerax2.set_ylim(-0.15, 1.15)
 
-	trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
-	trackerax.scatter(scatter_xs, scatter_ys, color='red')
-	scatter_xs_old = scatter_xs
-	scatter_ys_old = scatter_ys
-	if args.step_by_step:
-		plt.ginput()
+		trackerax2.scatter([t for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
+		trackerax2.scatter([t for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
+
+		scatter_xs = []
+		scatter_ys = []
+		for t in trackers:
+			scatter_xs += [t for t,f in t.beats]
+			scatter_ys += [t.confidence] * len(t.beats)
+
+		trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
+		trackerax.scatter(scatter_xs, scatter_ys, color='red')
+		scatter_xs_old = scatter_xs
+		scatter_ys_old = scatter_ys
+		if args.step_by_step:
+			plt.ginput()
 
 for t in trackers:
 	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)
@@ -466,17 +476,18 @@ for t in trackers:
 
 beats=np.array( trackers[0].beats )
 
-for t,f in beats:
-	axs[2].axhline(t, color='red', ls='-' if f else '-.')
-
 print("%.2f%%" % (len([1 for t,f in beats if f]) / len(beats)*100))
 
 
 mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 
-for i in range(31):
-	#axs[2].axhline(beats[0][0] + i*mean_beat_time, color="green", ls='--')
-	axs[2].axhline(phase + i*periodicity, color="purple", ls='--')
+if args.plot:
+	for t,f in beats:
+		axs[2].axhline(t, color='red', ls='-' if f else '-.')
+
+	for i in range(31):
+		#axs[2].axhline(beats[0][0] + i*mean_beat_time, color="green", ls='--')
+		axs[2].axhline(phase + i*periodicity, color="purple", ls='--')
 
 mean_bpm = (60/mean_beat_time/timestep_real)
 print(f"original tempo estimate = {tempo:.1f}bpm, actual mean tempo = {mean_bpm:.1f}")
@@ -487,56 +498,59 @@ errors_ms = errors*1000
 print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")
 print(f"lambda = {lam}")
 
+if args.plot:
+	fig, axs = plt.subplots(1,1)
+	ax=axs
 
-fig, axs = plt.subplots(1,1)
-ax=axs
+	bpms = []
+	ts = []
+	for ((t1,_), (t2,_)) in zip(beats, beats[1:]):
+		t1 = t1 * timestep_real
+		t2 = t2 * timestep_real
+		bpm = 60 / (t2-t1)
+		ts.append((t1+t2)/2)
+		bpms.append(bpm)
 
-bpms = []
-ts = []
-for ((t1,_), (t2,_)) in zip(beats, beats[1:]):
-	t1 = t1 * timestep_real
-	t2 = t2 * timestep_real
-	bpm = 60 / (t2-t1)
-	ts.append((t1+t2)/2)
-	bpms.append(bpm)
-
-ax.plot(ts, bpms)
+	ax.plot(ts, bpms)
 
 print("writing out.mp3")
 
-data_debug = data_orig[:,:]
+def write_debugout(filename, data_orig, beats):
+	data_debug = data_orig[:,:]
 
-beep1_freq = 880
-beep2_freq = 880 * 3/2
-beep_ms = 40
-beep_fadein_ms = 0.1
-beep_fadeout_ms = 10
+	beep1_freq = 880
+	beep2_freq = 880 * 3/2
+	beep_ms = 40
+	beep_fadein_ms = 0.1
+	beep_fadeout_ms = 10
 
-beep1 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep1_freq )
-beep2 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep2_freq )
-beep2 = beep2 + beep1
+	beep1 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep1_freq )
+	beep2 = np.sin( np.arange(0, beep_ms/1000, 1/samplerate) * 2 * math.pi * beep2_freq )
+	beep2 = beep2 + beep1
 
-fadein = np.arange(0, 1, beep_fadein_ms/1000*samplerate)
-fadeout = np.arange(1,0, -beep_fadeout_ms/1000*samplerate)
-beep_window = np.concat([fadein, np.ones(len(beep1)-len(fadein)-len(fadeout)), fadeout])
-beep1 = beep1 * beep_window * 0.5
-beep2 = beep2 * beep_window * 0.5
+	fadein = np.arange(0, 1, beep_fadein_ms/1000*samplerate)
+	fadeout = np.arange(1,0, -beep_fadeout_ms/1000*samplerate)
+	beep_window = np.concat([fadein, np.ones(len(beep1)-len(fadein)-len(fadeout)), fadeout])
+	beep1 = beep1 * beep_window * 0.25
+	beep2 = beep2 * beep_window * 0.25
 
 
-for i, (t,f) in enumerate(beats):
-	beep = beep1 if f else beep2
-	print("t = ", t)
-	t = int((t * timestep_real + time_fixup_s) * samplerate)
-	if t < 0: continue
-	if t + len(beep) >= data_debug.shape[0]: continue
-	data_debug[t:(t+len(beep)), :] += beep.reshape(-1, 1)
+	for i, beat in enumerate(beats):
+		#if i%2 == 1 and t > 40_000: continue
+		t = beat[0]
+		f = beat[1]
+		beep = beep1 if f else beep2
+		t = int((t * timestep_real + time_fixup_s) * samplerate)
+		if t < 0: continue
+		if t + len(beep) >= data_debug.shape[0]: continue
+		data_debug[t:(t+len(beep)), :] += beep.reshape(-1, 1)
 
-data_debug /= (1 + max(beep))
+	data_debug /= (1 + max(beep))
 
-sf.write("out.mp3", data_debug, samplerate)
-#t=np.linspace(0,y.shape[0], y.shape[0])
-#f=np.linspace(0,y.shape[1], y.shape[1])
+	sf.write(filename, data_debug, samplerate)
 
-#plt.y
+write_debugout("out.mp3", data_orig, beats)
+write_debugout("out_greedy.mp3", data_orig, greedy_beats)
 
-plt.show()
+if args.plot:
+	plt.show()

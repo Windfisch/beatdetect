@@ -16,6 +16,7 @@ p.add_argument('--late-binning', action='store_true')
 p.add_argument('--bpm')
 p.add_argument('--offbeat', action='store_true')
 p.add_argument('--duration', type=float, default=20)
+p.add_argument('--step-by-step', action='store_true', default=False)
 args = p.parse_args()
 
 print_orig = print
@@ -305,6 +306,7 @@ class BeatTracker:
 		self.time_per_beat = time_per_beat
 		self.confidence = confidence
 		self.beats = beats[:]
+		self.used = False
 		if confidence > 0.05:
 			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, tpb = {self.time_per_beat:.2f}")
 
@@ -319,7 +321,8 @@ class BeatTracker:
 		for loc, prom in zip(peak_locs, peak_prominences):
 			t_diff = loc - expected_loc
 			relevance = math.exp(-0.5*(t_diff/self.sigma)**2) / (self.lam * math.exp(-self.lam * prom))
-			peaks.append((relevance, loc, True))
+			if loc > self.beat_loc + self.time_per_beat*0.1:
+				peaks.append((relevance, loc, True))
 
 		P_HAVEPEAK = 0.03
 		peaks.append((1/P_HAVEPEAK-1, expected_loc, False))
@@ -356,41 +359,59 @@ trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [(t, False)])]
 half_window = int(periodicity/2 * 0.7)
 
 _, trackerax = plt.subplots(1,1)
+trackerax2 = trackerax.twinx()
 
 beats = []
+greedy_beats = []
 scatter_xs_old = []
 scatter_ys_old = []
+window_start, window_end = 0, 0
 for i in range(9999):
-	window_start, window_end = get_search_interval(trackers)
-	window_start = min(max(window_start, 0), len(z))
-	window_end = min(max(window_end, 0), len(z))
-	print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
-	window = z[window_start : window_end]
+	if all([tr.search_interval()[1] > window_end for tr in trackers]):
+		print("============================")
+		window_start, window_end = get_search_interval(trackers)
+		window_start = min(max(window_start, 0), len(z))
+		window_end = min(max(window_end, 0), len(z))
+		print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
+		window = z[window_start : window_end]
 
-	if len(window) < 100: break
+		if len(window) < 100:
+			print("hit the end, exiting")
+			break
 
-	result = ss.find_peaks(window, height=0, distance = (0.01 / timestep_real), prominence=0.05 * np.max(window))
+		result = ss.find_peaks(window, height=0, distance = (0.01 / timestep_real), prominence=0.05 * np.max(window))
 
-	peaks = result[0] + window_start
-	heights = result[1]['peak_heights']
+		peaks = result[0] + window_start
+		heights = result[1]['peak_heights']
 
-	#print(f"peaks = {peaks}, heights = {heights}")
-	print(f"found {len(peaks)} peaks")
+		#print(f"peaks = {peaks}, heights = {heights}")
+		print(f"found {len(peaks)} peaks")
 
-	if len(peaks) == 0: continue
-
-	trackers_new = []
-	for tr in trackers:
-		trackers_new += tr.next_beat(peaks, heights)
+		if len(peaks) == 0: continue
 
 	print("------------------------------------")
-
+	trackers_new = []
+	n_updated = 0
+	for tr in trackers:
+		lo, hi = tr.search_interval()
+		if int(hi) <= window_end:
+			trackers_new += tr.next_beat(peaks, heights)
+			n_updated += 1
+		else:
+			trackers_new.append(tr)
 	trackers = trackers_new
+
+	if n_updated == 0:
+		print("no tracker was updated, exiting")
+		print(f"(window = {window_start}..{window_end}, len = {window_end-window_start})")
+		print([tr.search_interval() for tr in trackers])
+		break
 
 	trackers.sort(key = lambda t : (t.beats[-1][0], -t.confidence))
 
 	trackers_dedup = []
 	last_loc = None
+	# FIXME only deduplicate trackers with similar tempo
 	for t in trackers:
 		loc = t.beats[-1][0]
 		if loc != last_loc:
@@ -425,8 +446,8 @@ for i in range(9999):
 	trackerax.scatter(scatter_xs, scatter_ys, color='red')
 	scatter_xs_old = scatter_xs
 	scatter_ys_old = scatter_ys
-	#plt.waitforbuttonpress()
-	#plt.ginput()
+	if args.step_by_step:
+		plt.ginput()
 
 for t in trackers:
 	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)

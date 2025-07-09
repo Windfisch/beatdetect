@@ -435,7 +435,17 @@ for i in range(9999):
 
 	trackerax.clear()
 	trackerax.set_xlim(0, args.duration / timestep_real)
-	trackerax.set_ylim(0, 1)
+	trackerax.set_ylim(-0.05, 1.05)
+	trackerax2.clear()
+	trackerax2.set_xlim(0, args.duration / timestep_real)
+	trackerax2.set_ylim(-0.15, 1.15)
+
+	if trackers[0].used == False:
+		greedy_beats.append(trackers[0].beats[-1] + (trackers[0].confidence,))
+		trackers[0].used = True
+	trackerax2.scatter([t for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
+	trackerax2.scatter([t for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
+
 	scatter_xs = []
 	scatter_ys = []
 	for t in trackers:

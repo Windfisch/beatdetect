@@ -438,7 +438,7 @@ for i in range(9999):
 
 	trackers.sort(key = lambda t : -t.confidence)
 
-	trackers = trackers[0:3]
+	trackers = trackers[0:10]
 	
 	sum_conf = sum([t.confidence for t in trackers])
 	for t in trackers: t.confidence /= sum_conf

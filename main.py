@@ -377,6 +377,7 @@ greedy_beats = []
 scatter_xs_old = []
 scatter_ys_old = []
 window_start, window_end = 0, 0
+greedy_beats.append(trackers[0].beats[-1] + (trackers[0].confidence,))
 for i in range(9999):
 	if all([tr.search_interval()[1] > window_end for tr in trackers]):
 		print("============================")
@@ -446,7 +447,8 @@ for i in range(9999):
 
 	if trackers[0].used == False:
 		greedy_beats.append(trackers[0].beats[-1] + (trackers[0].confidence,))
-		trackers[0].used = True
+	for tr in trackers:
+		tr.used = True
 
 	if args.plot:
 		trackerax.clear()
@@ -519,7 +521,7 @@ if args.plot:
 print("writing out.mp3")
 
 def write_debugout(filename, data_orig, beats):
-	data_debug = data_orig[:,:]
+	data_debug = data_orig.copy()
 
 	beep1_freq = 880
 	beep2_freq = 880 * 3/2

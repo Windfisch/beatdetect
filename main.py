@@ -167,9 +167,9 @@ if args.late_binning:
 	y = log_avg2(y, bins)
 
 if args.plot:
-	axs[0].imshow(waterfall, aspect='auto') #, vmax=1e+4, vmin=0)
+	axs[0].imshow(waterfall, aspect='auto', extent=[0,waterfall.shape[1],waterfall.shape[0]*timestep_real,0]) #, vmax=1e+4, vmin=0)
 
-	axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8)
+	axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8, extent=[0,y.shape[1],y.shape[0]*timestep_real,0])
 	if not args.late_binning:
 		axs[1].sharex(axs[0])
 	axs[1].sharey(axs[0])
@@ -219,15 +219,13 @@ periodicity = int(np.round(60/tempo/timestep_real))
 z = np.sum( y[:, 40:], axis=1)
 
 if args.plot:
-	axs[3].imshow(correlation, aspect='auto')
+	axs[3].imshow(correlation, aspect='auto', extent=[0,correlation.shape[1],correlation.shape[0]*timestep_real,0])
 	axs[4].set_xlim(xmin=0, xmax=np.max(correlation_1d[crop:]))
-	axs[4].plot(correlation_1d, np.arange(len(correlation_1d)))
-	axs[4].axvline(peak_limit)
+	axs[4].plot(correlation_1d, np.arange(len(correlation_1d))*timestep_real)
 	axs[4].axvline(peak_limit)
 
-	if args.bpm is not None:
-		axs[4].axhline(periodicity)
-		axs[3].axhline(periodicity)
+	axs[4].axhline(periodicity*timestep_real)
+	axs[3].axhline(periodicity*timestep_real)
 
 	axs[4].sharey(axs[3])
 
@@ -245,8 +243,8 @@ if args.plot:
 	#plt.imshow(y, aspect='auto')
 
 
-	axs[2].plot(z, np.arange(len(z)), color='orange')
-	axs[2].plot(sn.gaussian_filter1d(z, 10), np.arange(len(z)), color='blue')
+	axs[2].plot(z, np.arange(len(z))*timestep_real, color='orange')
+	axs[2].plot(sn.gaussian_filter1d(z, 10/1000/timestep_real), np.arange(len(z))*timestep_real, color='blue')
 	axs[2].sharey(axs[0])
 
 z = sn.gaussian_filter1d(z, 10) # FIXME do we really want this?
@@ -257,12 +255,12 @@ if args.plot:
 		phase_window = int((5 / timestep_real) / periodicity_)*periodicity_
 		n = phase_window / periodicity_
 		phases = z[:phase_window].reshape(-1, periodicity_).sum(axis=0) / n
-		axs[5].plot(phases, lw=1)
+		axs[5].plot(np.arange(len(phases))*timestep_real, phases, lw=1)
 
 phase_window = int((5 / timestep_real) / periodicity)*periodicity
 n = phase_window / periodicity
 phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
-if args.plot: axs[5].plot(phases)
+if args.plot: axs[5].plot(np.arange(len(phases))*timestep_real, phases)
 
 
 
@@ -447,19 +445,19 @@ for i in range(9999):
 
 	if args.plot:
 		trackerax.clear()
-		trackerax.set_xlim(0, args.duration / timestep_real)
+		trackerax.set_xlim(0, args.duration)
 		trackerax.set_ylim(-0.05, 1.05)
 		trackerax2.clear()
-		trackerax2.set_xlim(0, args.duration / timestep_real)
+		trackerax2.set_xlim(0, args.duration)
 		trackerax2.set_ylim(-0.15, 1.15)
 
-		trackerax2.scatter([t for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
-		trackerax2.scatter([t for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
+		trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
+		trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
 
 		scatter_xs = []
 		scatter_ys = []
 		for t in trackers:
-			scatter_xs += [t for t,f in t.beats]
+			scatter_xs += [t*timestep_real for t,f in t.beats]
 			scatter_ys += [t.confidence] * len(t.beats)
 
 		trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
@@ -483,11 +481,11 @@ mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 
 if args.plot:
 	for t,f in beats:
-		axs[2].axhline(t, color='red', ls='-' if f else '-.')
+		axs[2].axhline(t*timestep_real, color='red', ls='-' if f else '-.')
 
 	for i in range(31):
 		#axs[2].axhline(beats[0][0] + i*mean_beat_time, color="green", ls='--')
-		axs[2].axhline(phase + i*periodicity, color="purple", ls='--')
+		axs[2].axhline((phase + i*periodicity)*timestep_real, color="purple", ls='--')
 
 mean_bpm = (60/mean_beat_time/timestep_real)
 print(f"original tempo estimate = {tempo:.1f}bpm, actual mean tempo = {mean_bpm:.1f}")

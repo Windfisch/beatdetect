@@ -301,8 +301,9 @@ serial_number = 1
 
 class BeatTracker:
 	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
-	def __init__(self, parent, sigma, lam, beat_loc, time_per_beat, confidence, beats):
+	def __init__(self, parent, timestep, sigma, lam, beat_loc, time_per_beat, confidence, beats):
 		global serial_number
+		self.timestep = timestep
 		self.sigma = sigma
 		self.parent = parent
 		self.serial = serial_number
@@ -318,10 +319,10 @@ class BeatTracker:
 
 	def search_interval(self):
 		expected_loc = self.beat_loc + self.time_per_beat
-		return (expected_loc - 300, expected_loc+300)
+		return (expected_loc - 300/1000/self.timestep, expected_loc+300/1000/self.timestep)
 
 	def next_beat(self, peak_locs, peak_prominences):
-		if self.time_per_beat < 50: # FIXME this is 50ms and this should be divided by timestep_real!
+		if self.time_per_beat < 50/1000/self.timestep:
 			# kill degenerate beat detectors that suggest an infinite tempo
 			return []
 
@@ -346,7 +347,7 @@ class BeatTracker:
 		confidence = self.confidence * (1-alpha) + 1 * alpha
 
 		tpb_alpha = 0.8
-		return [BeatTracker(self.serial, self.sigma, self.lam, loc, tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0]), confidence * rel, self.beats + [(loc, found)]) for (rel, loc, found) in peaks]
+		return [BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0]), confidence * rel, self.beats + [(loc, found)]) for (rel, loc, found) in peaks]
 
 def get_search_interval(trackers):
 	lo = 999999
@@ -365,7 +366,7 @@ if args.offbeat:
 phase = np.argmax(phases)
 delta_t = periodicity
 
-trackers = [BeatTracker(0, 20, lam, t, periodicity, 1, [(t, False)])]
+trackers = [BeatTracker(0, timestep_real, 20/1000/timestep_real, lam, t, periodicity, 1, [(t, False)])]
 
 half_window = int(periodicity/2 * 0.7)
 
@@ -388,7 +389,7 @@ for i in range(9999):
 		print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
 		window = z[window_start : window_end]
 
-		if len(window) < 100:
+		if len(window) < 2:
 			print("hit the end, exiting")
 			break
 

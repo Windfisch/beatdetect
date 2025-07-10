@@ -452,7 +452,7 @@ for i in range(9999):
 	for tr in trackers:
 		tr.used = True
 
-	if args.plot:
+	if args.plot and args.step_by_step:
 		trackerax.clear()
 		trackerax.set_xlim(0, args.duration)
 		trackerax.set_ylim(-0.05, 1.05)
@@ -475,6 +475,24 @@ for i in range(9999):
 		scatter_ys_old = scatter_ys
 		if args.step_by_step:
 			plt.ginput()
+
+if args.plot:
+	trackerax.clear()
+	trackerax.set_xlim(0, args.duration)
+	trackerax.set_ylim(-0.05, 1.05)
+	trackerax2.clear()
+	trackerax2.set_xlim(0, args.duration)
+	trackerax2.set_ylim(-0.15, 1.15)
+
+	trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
+	trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
+
+	scatter_xs = []
+	scatter_ys = []
+	for t in trackers:
+		scatter_xs += [t*timestep_real for t,f in t.beats]
+		scatter_ys += [t.confidence] * len(t.beats)
+	trackerax.scatter(scatter_xs, scatter_ys, color='red')
 
 for t in trackers:
 	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)
@@ -561,3 +579,5 @@ write_debugout("out_greedy.mp3", data_orig, greedy_beats)
 
 if args.plot:
 	plt.show()
+
+print("bye")

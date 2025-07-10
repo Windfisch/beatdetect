@@ -320,6 +320,11 @@ class BeatTracker:
 		return (expected_loc - 300, expected_loc+300)
 
 	def next_beat(self, peak_locs, peak_prominences):
+		if self.time_per_beat < 50: # FIXME this is 50ms and this should be divided by timestep_real!
+			# kill degenerate beat detectors that suggest an infinite tempo
+			return []
+
+
 		expected_loc = self.beat_loc + self.time_per_beat
 		peaks = []
 

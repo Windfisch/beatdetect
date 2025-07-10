@@ -17,6 +17,7 @@ p.add_argument('--offbeat', action='store_true')
 p.add_argument('--duration', type=float, default=20)
 p.add_argument('--step-by-step', action='store_true', default=False)
 p.add_argument('--plot', action='store_true', default=False)
+p.add_argument('--timestep', type=float, default=1)
 args = p.parse_args()
 
 if args.plot:
@@ -112,7 +113,7 @@ print(data.shape)
 
 
 
-timestep_desired = 1/1000
+timestep_desired = args.timestep/1000
 samplestep = int(samplerate * timestep_desired)
 timestep_real = samplestep / samplerate
 time_fixup_s = 0
@@ -247,7 +248,7 @@ if args.plot:
 	axs[2].plot(sn.gaussian_filter1d(z, 10/1000/timestep_real), np.arange(len(z))*timestep_real, color='blue')
 	axs[2].sharey(axs[0])
 
-z = sn.gaussian_filter1d(z, 10) # FIXME do we really want this?
+z = sn.gaussian_filter1d(z, 10/1000/timestep_real)
 
 if args.plot:
 	for tempo_ in tempi:

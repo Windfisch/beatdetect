@@ -438,20 +438,25 @@ for i in range(9999):
 		print([tr.search_interval() for tr in trackers])
 		break
 
-	trackers.sort(key = lambda t : (t.beats[-1][0], -t.confidence))
-
+	DEDUP_LOC_THRESHOLD_MS = 10
+	trackers.sort(key = lambda t : -t.confidence)
 	trackers_dedup = []
-	last_loc = None
-	# FIXME only deduplicate trackers with similar tempo
-	for t in trackers:
-		loc = t.beats[-1][0]
-		if loc != last_loc:
-			trackers_dedup.append(t)
-		else:
-			#print(f"deduplication merges trackers at {loc}. merge ")
-			trackers_dedup[-1].confidence += t.confidence
-		last_loc = loc
-	
+	for i in range(len(trackers)):
+		tr = trackers[i]
+		if tr is None: continue
+		loc = tr.beats[-1][0] * timestep_real * 1000
+
+		for j in range(i+1, len(trackers)):
+			candidate = trackers[j]
+			if candidate is None: continue
+			candidate_loc = candidate.beats[-1][0] * timestep_real * 1000
+
+			if abs(loc - candidate_loc) <= DEDUP_LOC_THRESHOLD_MS:
+				trackers[j] = None
+				tr.confidence += candidate.confidence
+
+		trackers_dedup.append(tr)
+
 	print(f"deduplication removed {len(trackers)-len(trackers_dedup)} of {len(trackers)} trackers")
 	trackers = trackers_dedup
 

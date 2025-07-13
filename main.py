@@ -138,7 +138,7 @@ if args.plot:
 print("fft")
 y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )
 
-y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1)
+y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) # sum bass together
 
 if not args.late_binning:
 	print("binning")

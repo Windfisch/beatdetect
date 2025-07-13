@@ -301,7 +301,7 @@ serial_number = 1
 
 class BeatTracker:
 	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
-	def __init__(self, parent, timestep, sigma, lam, beat_loc, time_per_beat, confidence, beats):
+	def __init__(self, parent, timestep, sigma, lam, beat_loc, time_per_beat, confidence, last_prom, beats):
 		global serial_number
 		self.timestep = timestep
 		self.sigma = sigma
@@ -311,11 +311,12 @@ class BeatTracker:
 		self.lam = lam
 		self.beat_loc = beat_loc
 		self.time_per_beat = time_per_beat
+		self.last_prom = last_prom
 		self.confidence = confidence
 		self.beats = beats[:]
 		self.used = False
 		if confidence > 0.05:
-			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, tpb = {self.time_per_beat:.2f}")
+			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
 
 	def search_interval(self):
 		expected_loc = self.beat_loc + self.time_per_beat
@@ -334,20 +335,30 @@ class BeatTracker:
 			t_diff = loc - expected_loc
 			relevance = math.exp(-0.5*(t_diff/self.sigma)**2) / (self.lam * math.exp(-self.lam * prom))
 			if loc > self.beat_loc + self.time_per_beat*0.1:
-				peaks.append((relevance, loc, True))
+				peaks.append((relevance, loc, True, prom))
 
-		P_HAVEPEAK = 0.03
-		peaks.append((1/P_HAVEPEAK-1, expected_loc, False))
+		print(f"expected = {expected_loc}, max = {max(peaks)}, lastprom = {self.last_prom}, relevance = {1 / (self.lam * math.exp(-self.lam * self.last_prom))}")
+		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom/2)), expected_loc, False, 0))
 
-		relevance_sum = sum([r for r,l,f in peaks])
-		peaks = [(r/relevance_sum, l, f) for r,l,f in peaks]
+		relevance_sum = sum([r for r,l,f,p in peaks])
+		peaks = [(r/relevance_sum, l, f,p) for r,l,f,p in peaks]
 		peaks = sorted(peaks)[::-1]
+
+		print("sorted: ", peaks)
 
 		alpha = 0
 		confidence = self.confidence * (1-alpha) + 1 * alpha
 
 		tpb_alpha = 0.8
-		return [BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0]), confidence * rel, self.beats + [(loc, found)]) for (rel, loc, found) in peaks]
+		prom_alpha = 0.8
+		result = []
+		for rel, loc, found, prom in peaks:
+			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0])
+			conf_new = confidence * rel
+			print(f"spawning found={found}, rel={rel}, conf={conf_new}, prom={prom}")
+			prom_new = prom_alpha*self.last_prom + (1-prom_alpha)*prom
+			result.append(BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
+		return result
 
 def get_search_interval(trackers):
 	lo = 999999
@@ -366,7 +377,7 @@ if args.offbeat:
 phase = np.argmax(phases)
 delta_t = periodicity
 
-trackers = [BeatTracker(0, timestep_real, 20/1000/timestep_real, lam, t, periodicity, 1, [(t, False)])]
+trackers = [BeatTracker(0, timestep_real, 20/1000/timestep_real, lam, t, periodicity, 1, 0, [(t, False, periodicity, 0, 0)])]
 
 half_window = int(periodicity/2 * 0.7)
 
@@ -431,7 +442,8 @@ for i in range(9999):
 		if loc != last_loc:
 			trackers_dedup.append(t)
 		else:
-			trackers_dedup[-1].confidence += trackers_dedup[-1].confidence
+			#print(f"deduplication merges trackers at {loc}. merge ")
+			trackers_dedup[-1].confidence += t.confidence
 		last_loc = loc
 	
 	print(f"deduplication removed {len(trackers)-len(trackers_dedup)} of {len(trackers)} trackers")
@@ -484,13 +496,13 @@ if args.plot:
 	trackerax2.set_xlim(0, args.duration)
 	trackerax2.set_ylim(-0.15, 1.15)
 
-	trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
-	trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
+	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [b[2] for b in greedy_beats], color='green')
+	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
 
 	scatter_xs = []
 	scatter_ys = []
 	for t in trackers:
-		scatter_xs += [t*timestep_real for t,f in t.beats]
+		scatter_xs += [b[0]*timestep_real for b in t.beats]
 		scatter_ys += [t.confidence] * len(t.beats)
 	trackerax.scatter(scatter_xs, scatter_ys, color='red')
 
@@ -501,23 +513,26 @@ for t in trackers:
 
 beats=np.array( trackers[0].beats )
 
-print("%.2f%%" % (len([1 for t,f in beats if f]) / len(beats)*100))
+print("%.2f%%" % (len([1 for b in beats if b[1]]) / len(beats)*100))
 
 
 mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 
 if args.plot:
-	for t,f in beats:
+	for t,f,tpb,prom_next,prom in beats:
 		axs[2].axhline(t*timestep_real, color='red', ls='-' if f else '-.')
+		axs[2].scatter([prom_next], [(t+tpb)*timestep_real], color='blue')
+		axs[2].scatter([prom], [t*timestep_real], color='red')
 
 	for i in range(31):
 		#axs[2].axhline(beats[0][0] + i*mean_beat_time, color="green", ls='--')
-		axs[2].axhline((phase + i*periodicity)*timestep_real, color="purple", ls='--')
+		#axs[2].axhline((phase + i*periodicity)*timestep_real, color="purple", ls='--')
+		pass
 
 mean_bpm = (60/mean_beat_time/timestep_real)
 print(f"original tempo estimate = {tempo:.1f}bpm, actual mean tempo = {mean_bpm:.1f}")
 
-errors = np.abs(([b for b,f in beats] - (beats[0][0] + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
+errors = np.abs(([b[0] for b in beats] - (beats[0][0] + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
 errors_ms = errors*1000
 
 print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")
@@ -529,9 +544,9 @@ if args.plot:
 
 	bpms = []
 	ts = []
-	for ((t1,_), (t2,_)) in zip(beats, beats[1:]):
-		t1 = t1 * timestep_real
-		t2 = t2 * timestep_real
+	for (b1, b2) in zip(beats, beats[1:]):
+		t1 = b1[0] * timestep_real
+		t2 = b2[0] * timestep_real
 		bpm = 60 / (t2-t1)
 		ts.append((t1+t2)/2)
 		bpms.append(bpm)

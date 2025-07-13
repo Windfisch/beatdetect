@@ -557,6 +557,7 @@ print("writing out.mp3")
 
 def write_debugout(filename, data_orig, beats):
 	data_debug = data_orig.copy()
+	data_debug /= np.max(data_debug)
 
 	beep1_freq = 880
 	beep2_freq = 880 * 3/2

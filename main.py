@@ -407,7 +407,9 @@ for i in range(9999):
 		result = ss.find_peaks(window, height=0, distance = (0.01 / timestep_real), prominence=0.05 * np.max(window))
 
 		peaks = result[0] + window_start
-		heights = result[1]['peak_heights']
+		heights = result[1]['prominences']
+
+
 
 		#print(f"peaks = {peaks}, heights = {heights}")
 		print(f"found {len(peaks)} peaks")

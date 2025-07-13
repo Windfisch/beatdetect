@@ -20,6 +20,8 @@ p.add_argument('--plot', action='store_true', default=False)
 p.add_argument('--timestep', type=float, default=1)
 args = p.parse_args()
 
+MIN_REL_PROMINENCE = 0.25
+
 if args.plot:
 	import matplotlib.pyplot as plt
 
@@ -338,7 +340,7 @@ class BeatTracker:
 				peaks.append((relevance, loc, True, prom))
 
 		print(f"expected = {expected_loc}, max = {max(peaks)}, lastprom = {self.last_prom}, relevance = {1 / (self.lam * math.exp(-self.lam * self.last_prom))}")
-		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom/2)), expected_loc, False, 0))
+		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom * MIN_REL_PROMINENCE)), expected_loc, False, 0))
 
 		relevance_sum = sum([r for r,l,f,p in peaks])
 		peaks = [(r/relevance_sum, l, f,p) for r,l,f,p in peaks]
@@ -349,8 +351,8 @@ class BeatTracker:
 		alpha = 0
 		confidence = self.confidence * (1-alpha) + 1 * alpha
 
-		tpb_alpha = 0.8
-		prom_alpha = 0.8
+		tpb_alpha = 0.7
+		prom_alpha = 0.5
 		result = []
 		for rel, loc, found, prom in peaks:
 			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0])
@@ -377,7 +379,9 @@ if args.offbeat:
 phase = np.argmax(phases)
 delta_t = periodicity
 
-trackers = [BeatTracker(0, timestep_real, 20/1000/timestep_real, lam, t, periodicity, 1, 0, [(t, False, periodicity, 0, 0)])]
+SIGMA_MS=50 # 30 is good for most stuff
+
+trackers = [BeatTracker(0, timestep_real, SIGMA_MS/1000/timestep_real, lam, t, periodicity, 1, 0, [(t, False, periodicity, 0, 0)])]
 
 half_window = int(periodicity/2 * 0.7)
 
@@ -523,7 +527,9 @@ mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 if args.plot:
 	for t,f,tpb,prom_next,prom in beats:
 		axs[2].axhline(t*timestep_real, color='red', ls='-' if f else '-.')
-		axs[2].scatter([prom_next], [(t+tpb)*timestep_real], color='blue')
+		axs[2].scatter([prom_next,prom_next * MIN_REL_PROMINENCE], [(t+tpb)*timestep_real]*2, color='blue')
+		spanwidth = SIGMA_MS/1000*2
+		axs[2].axhspan((t+tpb)*timestep_real-spanwidth/2, (t+tpb)*timestep_real+spanwidth/2, color=("yellow", 0.2))
 		axs[2].scatter([prom], [t*timestep_real], color='red')
 
 	for i in range(31):

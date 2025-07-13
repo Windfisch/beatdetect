@@ -483,13 +483,13 @@ for i in range(9999):
 		trackerax2.set_xlim(0, args.duration)
 		trackerax2.set_ylim(-0.15, 1.15)
 
-		trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [c for _,_,c in greedy_beats], color='green')
-		trackerax2.scatter([t*timestep_real for t,_,_ in greedy_beats], [1.07]*len(greedy_beats), color='green')
+		trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
+		trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
 
 		scatter_xs = []
 		scatter_ys = []
 		for t in trackers:
-			scatter_xs += [t*timestep_real for t,f in t.beats]
+			scatter_xs += [b[0]*timestep_real for b in t.beats]
 			scatter_ys += [t.confidence] * len(t.beats)
 
 		trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
@@ -507,7 +507,7 @@ if args.plot:
 	trackerax2.set_xlim(0, args.duration)
 	trackerax2.set_ylim(-0.15, 1.15)
 
-	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [b[2] for b in greedy_beats], color='green')
+	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
 	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
 
 	scatter_xs = []

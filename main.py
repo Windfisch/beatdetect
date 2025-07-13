@@ -11,7 +11,6 @@ import argparse
 p = argparse.ArgumentParser()
 p.add_argument('file')
 p.add_argument('start')
-p.add_argument('--late-binning', action='store_true')
 p.add_argument('--bpm')
 p.add_argument('--offbeat', action='store_true')
 p.add_argument('--duration', type=float, default=20)
@@ -24,6 +23,119 @@ MIN_REL_PROMINENCE = 0.25
 
 if args.plot:
 	import matplotlib.pyplot as plt
+
+class BeatDetector:
+	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, plot=False, step_by_step=False):
+		self.samplerate = samplerate
+	
+		timestep_desired = timestep_desired_ms / 1000
+		self.samplestep = int(samplerate * timestep_desired)
+		self.timestep_real = self.samplestep / samplerate
+		
+		self.latency = fft_window_ms/1000/2
+
+		self.fft_window_size = int(self.fft_window_ms / 1000 * samplerate)
+		self.fft_window = np.hamming(self.fft_window_size)
+		self.fft_size = 2 * self.fft_window
+		self.logbins = math.log(self.fftsize, 2)*12
+		
+		self.cfar_kernel = cfar_kernel( int(cfar_avg_ms / 1000 / self.timestep_real), int(cfar_dead_ms / 1000 / self.timestep_real) )
+		print("kernel len = ", len(self.cfar_kernel))
+
+		self.plot = plot
+		self.step_by_step = step_by_step
+
+		self.audio_history = np.zeros(self.fft_window_size-1)
+		self.fft_history = np.zeros((len(self.cfar_kernel)-1, int(self.logbins)))
+		self.snr_history = np.zeros((0, int(self.logbins)))
+
+		self.tempo_correlation_window = int(20/self.timestep_real)
+		
+		if plot:
+			fig, axs1 = plt.subplots(1,3)
+			fig, axs2 = plt.subplots(1,3)
+			self.axs = np.ndarray.flatten(np.concat([axs1,axs2]))
+
+	def process(self, audio):
+		data = np.concatenate([self.audio_history, audio])
+		x = overlapping_windows(data, self.fft_window, self.samplestep)
+		self.audio_history = data[self.samplestep * x.shape[0] : ]
+
+		y = np.absolute( np.fft.rfft(x, n = self.fft_size, axis=1) )
+		y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) # sum bass together
+
+		print("binning")
+		y = log_sum2(y, self.logbins)
+
+		y = np.log10(y + 1e-4) * 20
+
+		waterfall = y
+
+		self.fft_history = np.concatenate([self.fft_history[-(len(self.cfar_kernel)-1):, :], y], axis=0)
+		
+		print("convolving")
+		y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
+
+		assert y.shape[0] == waterfall.shape[0]
+
+		print("maximum")
+		y = np.fmax(y - 0, 0)
+
+		if args.plot:
+			axs[0].imshow(waterfall, aspect='auto', extent=[0,waterfall.shape[1],waterfall.shape[0]*timestep_real,0]) #, vmax=1e+4, vmin=0)
+			axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8, extent=[0,y.shape[1],y.shape[0]*timestep_real,0])
+			axs[1].sharex(axs[0])
+			axs[1].sharey(axs[0])
+
+		print("done")
+
+		self.snr_history = np.concatenate([self.snr_history[-(self.snr_history_maxlen - y.shape[0]):,:], y], axis=0)
+		assert self.snr_history.shape[0] <= self.snr_history_maxlen
+
+		if self.need_tempo:
+			if self.snr_history.shape[0] >= self.tempo_correlation_window:
+
+	def estimate_tempo_and_phase(self, snr_history, force_bpm=None):
+		print("Got enough data to compute a tempo estimate!")
+		min_bpm = 60
+		max_bpm = 300
+		y = snr_history
+		correlation_window = self.tempo_correlation_window
+
+		#corr_data = y[ -int((60/min_bpm) / timestep_real)-correlation_window:, :]
+		#corr_reference = corr_data[-correlation_window:, :]
+		#correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
+		#	foo[ -int((60/min_bpm) / timestep_real)-correlation_window:],
+		#	foo[-correlation_window:], 'valid')), axis=0, arr=y)
+		correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
+			foo[ 0 : int((60/min_bpm) / self.timestep_real)+correlation_window],
+			foo[ int((60/min_bpm) / self.timestep_real) :int((60/min_bpm) / self.timestep_real)+correlation_window],
+			'valid')), axis=0, arr=y)
+
+		correlation_1d = np.sum(correlation, axis=1)
+
+		crop = int(60/max_bpm/self.timestep_real)
+
+		peak_limit = (np.quantile(correlation_1d[crop:], 0.9))
+
+		peaks = ss.find_peaks(correlation_1d, height=peak_limit, prominence=peak_limit*0.3)[0]
+		tempi = [ (60/(t*self.timestep_real)) for t in peaks]
+		print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
+
+		if args.bpm is None:
+			tempo = tempi[0]
+			if tempo > 240: tempo /= 2
+		else:
+			tempo = float(args.bpm)
+			print("Using --bpm override")
+
+		print(f"Using tempo {tempo}")
+
+
+		periodicity = int(np.round(60/tempo/timestep_real))
+
+
+
 
 print_orig = print
 last_timestamp = None
@@ -85,9 +197,7 @@ def log_sum2(a, bins):
 def overlapping_windows(data, window, step):
 	N = len(window)
 	step=int(step)
-	print(N, step, data.strides)
-	print(len(data), len(window))
-	return np.lib.stride_tricks.as_strided(data,( (len(data)-len(window)) // step ,N), [data.strides[0]*step, data.strides[0]]) * window
+	return np.lib.stride_tricks.as_strided(data,( (len(data)-len(window)) // step + 1, N), [data.strides[0]*step, data.strides[0]]) * window
 
 
 print("reading file")
@@ -132,18 +242,15 @@ if args.plot:
 	fig, axs1 = plt.subplots(1,3)
 	fig, axs2 = plt.subplots(1,3)
 	axs = np.ndarray.flatten(np.concat([axs1,axs2]))
-	if args.late_binning:
-		axs[0].set_xscale('log')
 
 print("fft")
 y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )
 
 y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) # sum bass together
 
-if not args.late_binning:
-	print("binning")
-	bins = math.log(y.shape[1], 2)*12
-	y = log_sum2(y, bins)
+print("binning")
+bins = math.log(y.shape[1], 2)*12
+y = log_sum2(y, bins)
 
 y = np.log10(y + 1e-4) * 20
 
@@ -164,17 +271,11 @@ time_fixup_s += len(my_kernel)*timestep_real
 print("maximum")
 y = np.fmax(y - 0, 0)
 
-if args.late_binning:
-	print("binning")
-	bins = math.log(y.shape[1], 2)*12
-	y = log_avg2(y, bins)
-
 if args.plot:
 	axs[0].imshow(waterfall, aspect='auto', extent=[0,waterfall.shape[1],waterfall.shape[0]*timestep_real,0]) #, vmax=1e+4, vmin=0)
 
 	axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8, extent=[0,y.shape[1],y.shape[0]*timestep_real,0])
-	if not args.late_binning:
-		axs[1].sharex(axs[0])
+	axs[1].sharex(axs[0])
 	axs[1].sharey(axs[0])
 
 #y=np.apply_along_axis( lambda foo: find_local_maxima(foo), axis=0, arr=y) & (y>0)

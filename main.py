@@ -24,20 +24,96 @@ MIN_REL_PROMINENCE = 0.25
 if args.plot:
 	import matplotlib.pyplot as plt
 
+def get_search_interval(trackers):
+	lo = 999999
+	hi = -1
+	for t in trackers:
+		l, h = t.search_interval()
+		lo = min(lo, l)
+		hi = max(hi, h)
+	return (int(lo), int(hi))
+
+serial_number = 1
+
+class BeatTracker:
+	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
+	def __init__(self, parent, timestep, sigma, lam, beat_loc, time_per_beat, confidence, last_prom, beats):
+		global serial_number
+		self.timestep = timestep
+		self.sigma = sigma
+		self.parent = parent
+		self.serial = serial_number
+		serial_number+=1
+		self.lam = lam
+		self.beat_loc = beat_loc
+		self.time_per_beat = time_per_beat
+		self.last_prom = last_prom
+		self.confidence = confidence
+		self.beats = beats[:]
+		self.used = False
+		if confidence > 0.05:
+			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
+
+	def search_interval(self):
+		expected_loc = self.beat_loc + self.time_per_beat
+		return (expected_loc - 300/1000/self.timestep, expected_loc+300/1000/self.timestep)
+
+	def next_beat(self, peak_locs, peak_prominences):
+		if self.time_per_beat < 50/1000/self.timestep:
+			# kill degenerate beat detectors that suggest an infinite tempo
+			return []
+
+
+		expected_loc = self.beat_loc + self.time_per_beat
+		peaks = []
+
+		for loc, prom in zip(peak_locs, peak_prominences):
+			t_diff = loc - expected_loc
+			relevance = math.exp(-0.5*(t_diff/self.sigma)**2) / (self.lam * math.exp(-self.lam * prom))
+			if loc > self.beat_loc + self.time_per_beat*0.1:
+				peaks.append((relevance, loc, True, prom))
+
+		print(f"expected = {expected_loc}, max = {max(peaks)}, lastprom = {self.last_prom}, relevance = {1 / (self.lam * math.exp(-self.lam * self.last_prom))}")
+		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom * MIN_REL_PROMINENCE)), expected_loc, False, 0))
+
+		relevance_sum = sum([r for r,l,f,p in peaks])
+		peaks = [(r/relevance_sum, l, f,p) for r,l,f,p in peaks]
+		peaks = sorted(peaks)[::-1]
+
+		print("sorted: ", peaks)
+
+		alpha = 0
+		confidence = self.confidence * (1-alpha) + 1 * alpha
+
+		tpb_alpha = 0.7
+		prom_alpha = 0.5
+		result = []
+		for rel, loc, found, prom in peaks:
+			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0])
+			conf_new = confidence * rel
+			print(f"spawning found={found}, rel={rel}, conf={conf_new}, prom={prom}")
+			prom_new = prom_alpha*self.last_prom + (1-prom_alpha)*prom
+			result.append(BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
+		return result
+
+SIGMA_MS=50 # 30 is good for most stuff
+
 class BeatDetector:
-	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, plot=False, step_by_step=False):
+	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot=False, step_by_step=False):
 		self.samplerate = samplerate
+		self.force_bpm = force_bpm
 	
 		timestep_desired = timestep_desired_ms / 1000
 		self.samplestep = int(samplerate * timestep_desired)
 		self.timestep_real = self.samplestep / samplerate
+		print(f"using a timestep of {self.timestep_real*1000:.3f}ms")
 		
 		self.latency = fft_window_ms/1000/2
 
-		self.fft_window_size = int(self.fft_window_ms / 1000 * samplerate)
+		self.fft_window_size = int(fft_window_ms / 1000 * samplerate)
 		self.fft_window = np.hamming(self.fft_window_size)
-		self.fft_size = 2 * self.fft_window
-		self.logbins = math.log(self.fftsize, 2)*12
+		self.fft_size = 2 * self.fft_window_size
+		self.logbins = math.log(self.fft_size, 2)*12
 		
 		self.cfar_kernel = cfar_kernel( int(cfar_avg_ms / 1000 / self.timestep_real), int(cfar_dead_ms / 1000 / self.timestep_real) )
 		print("kernel len = ", len(self.cfar_kernel))
@@ -48,18 +124,38 @@ class BeatDetector:
 		self.audio_history = np.zeros(self.fft_window_size-1)
 		self.fft_history = np.zeros((len(self.cfar_kernel)-1, int(self.logbins)))
 		self.snr_history = np.zeros((0, int(self.logbins)))
+		self.snrsum_history = np.zeros(0)
+		self.snr_history_maxlen = samplerate*30
 
-		self.tempo_correlation_window = int(20/self.timestep_real)
-		
-		if plot:
+		self.next_sample = 0
+		self.next_timestep = 0
+		self.need_tempo = True
+
+		self.trackers = []
+
+		self.beats = []
+		self.greedy_beats = []
+
+		if self.plot:
 			fig, axs1 = plt.subplots(1,3)
 			fig, axs2 = plt.subplots(1,3)
 			self.axs = np.ndarray.flatten(np.concat([axs1,axs2]))
+			fig2 = plt.figure()
+			self.peakstatax = fig2.add_subplot()
 
 	def process(self, audio):
+		first_sample = self.next_sample
+		self.next_sample += len(audio)
+		print(f"consuming {len(audio)} samples, starting at {first_sample}")
+
 		data = np.concatenate([self.audio_history, audio])
+		# audio[-1] is at t = self.next_sample samples
+		# so is data[-1]
+
 		x = overlapping_windows(data, self.fft_window, self.samplestep)
+		self.next_timestep += x.shape[0]
 		self.audio_history = data[self.samplestep * x.shape[0] : ]
+		print(f"got {x.shape[0]} new timesteps; audio history len = {len(self.audio_history)}")
 
 		y = np.absolute( np.fft.rfft(x, n = self.fft_size, axis=1) )
 		y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) # sum bass together
@@ -71,7 +167,10 @@ class BeatDetector:
 
 		waterfall = y
 
+		# x[-1] and y[-1] is at t = self.next_timestep timesteps
+
 		self.fft_history = np.concatenate([self.fft_history[-(len(self.cfar_kernel)-1):, :], y], axis=0)
+		print(f"fft history len = {self.fft_history.shape[0]} timesteps")
 		
 		print("convolving")
 		y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
@@ -82,34 +181,184 @@ class BeatDetector:
 		y = np.fmax(y - 0, 0)
 
 		if args.plot:
-			axs[0].imshow(waterfall, aspect='auto', extent=[0,waterfall.shape[1],waterfall.shape[0]*timestep_real,0]) #, vmax=1e+4, vmin=0)
-			axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8, extent=[0,y.shape[1],y.shape[0]*timestep_real,0])
+			axs = self.axs
+			axs[0].clear()
+			axs[1].clear()
+			axs[0].imshow(waterfall, aspect='auto', extent=[0,waterfall.shape[1],waterfall.shape[0]*self.timestep_real,0]) #, vmax=1e+4, vmin=0)
+			axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8, extent=[0,y.shape[1],y.shape[0]*self.timestep_real,0])
 			axs[1].sharex(axs[0])
 			axs[1].sharey(axs[0])
 
 		print("done")
 
-		self.snr_history = np.concatenate([self.snr_history[-(self.snr_history_maxlen - y.shape[0]):,:], y], axis=0)
+		z = np.sum( y[:, 40:], axis=1)
+
+		self.snr_history = np.concatenate([self.snr_history, y], axis=0)[-self.snr_history_maxlen:,:]
 		assert self.snr_history.shape[0] <= self.snr_history_maxlen
+		self.snrsum_history = np.concatenate([self.snrsum_history, z])[-self.snr_history_maxlen:]
+		assert len(self.snrsum_history) == self.snr_history.shape[0]
+		
+		# x[-1], y[-1], z[-1], self.snr_history[-1] and self.snrsum_history[-1] is at t = self.next_timestep timesteps
+
+		print(f"snr history len = {self.snr_history.shape[0]} timesteps")
+
+		if args.plot:
+			axs[2].clear()
+			axs[2].plot(self.snrsum_history, np.arange(len(self.snrsum_history))*self.timestep_real, color='orange')
+			axs[2].plot(sn.gaussian_filter1d(self.snrsum_history, 10/1000/self.timestep_real), np.arange(len(self.snr_history))*self.timestep_real, color='blue')
+			axs[2].sharey(axs[0])
+
+		#z = sn.gaussian_filter1d(z, 10/1000/timestep_real) FIXME
+
+		print("Running statistics on the peaks")
+		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history, 10/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
+		prominences = sorted(result[1]['prominences'])[::-1]
+		lam = 1/np.mean(prominences)
+		print("lambda = %.6f" % lam)
 
 		if self.need_tempo:
-			if self.snr_history.shape[0] >= self.tempo_correlation_window:
+			result, missing = self.estimate_tempo_and_phase(self.snr_history, self.snrsum_history, self.force_bpm)
+			if missing > 0:
+				print(f"Tempo estimation pending, need {missing} more samples")
+			else:
+				tempo, phase = result
+				phase += (self.next_timestep - len(self.snrsum_history))
+				periodicity = int(np.round(60/tempo/self.timestep_real))
+				print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
 
-	def estimate_tempo_and_phase(self, snr_history, force_bpm=None):
-		print("Got enough data to compute a tempo estimate!")
+				self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, 0, [(phase, False, periodicity, 0, 0)])]
+
+				self.need_tempo = False
+
+		if args.plot:
+			self.peakstatax.plot(prominences, np.arange(len(prominences))/len(prominences))
+			self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
+
+		window_start, window_end = 0, 0
+		while True:
+			if all([tr.search_interval()[1] > window_end for tr in self.trackers]):
+				print("============================")
+				window_start, window_end = get_search_interval(self.trackers)
+				window_start = max(window_start, self.next_timestep - len(self.snrsum_history))
+				window_end = max(window_end, 0)
+				if window_end >= self.next_timestep:
+					print("not enough audio, exiting")
+					break
+
+				print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
+				window = self.snrsum_history[window_start-(self.next_timestep-len(self.snrsum_history)) : window_end-(self.next_timestep-len(self.snrsum_history))]
+				if len(window) == 0:
+					print("window is empty")
+					break
+				# FIXME gaussian filtering!
+
+				result = ss.find_peaks(window, height=0, distance = (0.01 / self.timestep_real), prominence=0.05 * np.max(window))
+
+				peaks = result[0] + window_start
+				heights = result[1]['prominences']
+				print(f"found {len(peaks)} peaks")
+				if len(peaks) == 0: continue
+
+			print("------------------------------------")
+			trackers_new = []
+			n_updated = 0
+			for tr in self.trackers:
+				lo, hi = tr.search_interval()
+				if int(hi) <= window_end:
+					trackers_new += tr.next_beat(peaks, heights)
+					n_updated += 1
+				else:
+					trackers_new.append(tr)
+			self.trackers = trackers_new
+
+			if n_updated == 0:
+				print("no tracker was updated, exiting")
+				print(f"(window = {window_start}..{window_end}, len = {window_end-window_start})")
+				print([tr.search_interval() for tr in self.trackers])
+				assert False # FIXME
+
+			DEDUP_LOC_THRESHOLD_MS = 10
+			self.trackers.sort(key = lambda t : -t.confidence)
+			trackers_dedup = []
+			for i in range(len(self.trackers)):
+				tr = self.trackers[i]
+				if tr is None: continue
+				loc = tr.beats[-1][0] * self.timestep_real * 1000
+
+				for j in range(i+1, len(self.trackers)):
+					candidate = self.trackers[j]
+					if candidate is None: continue
+					candidate_loc = candidate.beats[-1][0] * self.timestep_real * 1000
+
+					if abs(loc - candidate_loc) <= DEDUP_LOC_THRESHOLD_MS:
+						self.trackers[j] = None
+						tr.confidence += candidate.confidence
+
+				trackers_dedup.append(tr)
+
+			print(f"deduplication removed {len(self.trackers)-len(trackers_dedup)} of {len(self.trackers)} trackers")
+			self.trackers = trackers_dedup
+
+			self.trackers.sort(key = lambda t : -t.confidence)
+
+			self.trackers = self.trackers[0:10]
+			
+			sum_conf = sum([t.confidence for t in self.trackers])
+			for t in self.trackers: t.confidence /= sum_conf
+
+
+			print("confidences: ", ", ".join(["%5f" % t.confidence for t in self.trackers]))
+
+			if self.trackers[0].used == False:
+				self.greedy_beats.append(self.trackers[0].beats[-1] + (self.trackers[0].confidence,))
+			for tr in self.trackers:
+				tr.used = True
+
+			if args.plot and args.step_by_step:
+				trackerax.clear()
+				trackerax.set_xlim(0, args.duration)
+				trackerax.set_ylim(-0.05, 1.05)
+				trackerax2.clear()
+				trackerax2.set_xlim(0, args.duration)
+				trackerax2.set_ylim(-0.15, 1.15)
+
+				trackerax2.scatter([b[0]*self.timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
+				trackerax2.scatter([b[0]*self.timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
+
+				scatter_xs = []
+				scatter_ys = []
+				for t in self.trackers:
+					scatter_xs += [b[0]*self.timestep_real for b in t.beats]
+					scatter_ys += [t.confidence] * len(t.beats)
+
+				trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
+				trackerax.scatter(scatter_xs, scatter_ys, color='red')
+				scatter_xs_old = scatter_xs
+				scatter_ys_old = scatter_ys
+				if args.step_by_step:
+					plt.ginput()
+
+
+	def estimate_tempo_and_phase(self, snr_history, snrsum_history, force_bpm=None):
 		min_bpm = 60
 		max_bpm = 300
-		y = snr_history
-		correlation_window = self.tempo_correlation_window
+		y = snr_history # FIXME naming
+		z = snrsum_history # FIXME naming
 
+		correlation_window = int(20/self.timestep_real)
+		rows_needed = correlation_window + int((60/min_bpm)/self.timestep_real)
+		if snr_history.shape[0] < rows_needed:
+			return None, rows_needed - snr_history.shape[0]
+
+		print("Got enough data to compute a tempo estimate!")
 		#corr_data = y[ -int((60/min_bpm) / timestep_real)-correlation_window:, :]
 		#corr_reference = corr_data[-correlation_window:, :]
 		#correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
 		#	foo[ -int((60/min_bpm) / timestep_real)-correlation_window:],
 		#	foo[-correlation_window:], 'valid')), axis=0, arr=y)
 		correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
-			foo[ 0 : int((60/min_bpm) / self.timestep_real)+correlation_window],
-			foo[ int((60/min_bpm) / self.timestep_real) :int((60/min_bpm) / self.timestep_real)+correlation_window],
+			foo[ -(int((60/min_bpm) / self.timestep_real)+correlation_window) : ],
+			foo[ -correlation_window : ],
 			'valid')), axis=0, arr=y)
 
 		correlation_1d = np.sum(correlation, axis=1)
@@ -132,8 +381,33 @@ class BeatDetector:
 		print(f"Using tempo {tempo}")
 
 
-		periodicity = int(np.round(60/tempo/timestep_real))
+		periodicity = int(np.round(60/tempo/self.timestep_real))
 
+		if self.plot:
+			axs = self.axs
+			axs[3].imshow(correlation, aspect='auto', extent=[0,correlation.shape[1],correlation.shape[0]*self.timestep_real,0])
+			axs[4].set_xlim(xmin=0, xmax=np.max(correlation_1d[crop:]))
+			axs[4].plot(correlation_1d, np.arange(len(correlation_1d))*self.timestep_real)
+			axs[4].axvline(peak_limit)
+
+			axs[4].axhline(periodicity*self.timestep_real)
+			axs[3].axhline(periodicity*self.timestep_real)
+
+			axs[4].sharey(axs[3])
+			
+			for tempo_ in tempi:
+				periodicity_ = int(np.round(60/tempo_/self.timestep_real))
+				phase_window = int((5 / self.timestep_real) / periodicity_)*periodicity_
+				n = phase_window / periodicity_
+				phases = z[:phase_window].reshape(-1, periodicity_).sum(axis=0) / n
+				axs[5].plot(np.arange(len(phases))*self.timestep_real, phases, lw=1)
+
+		phase_window = int((5 / self.timestep_real) / periodicity)*periodicity
+		n = phase_window / periodicity
+		phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
+		if args.plot: axs[5].plot(np.arange(len(phases))*self.timestep_real, phases)
+
+		return (periodicity, np.argmax(phases)), 0
 
 
 
@@ -223,384 +497,15 @@ data = data_orig[:,0]
 print(data.shape)
 
 
+bd = BeatDetector(samplerate, plot=args.plot)
 
+for i in range(40):
+	bd.process(data[i*samplerate:samplerate*(i+1)])
+	if args.plot: plt.show(block=False)
 
-timestep_desired = args.timestep/1000
-samplestep = int(samplerate * timestep_desired)
-timestep_real = samplestep / samplerate
-time_fixup_s = 0
 
-print(f"using a timestep of {timestep_real*1000:.3f}ms")
-print("windowing")
 
-fft_window_ms = 25
-
-x = overlapping_windows(data, np.hamming(int(fft_window_ms / 1000 * samplerate)), samplestep)
-time_fixup_s += fft_window_ms/1000/2
-
-if args.plot:
-	fig, axs1 = plt.subplots(1,3)
-	fig, axs2 = plt.subplots(1,3)
-	axs = np.ndarray.flatten(np.concat([axs1,axs2]))
-
-print("fft")
-y = np.absolute( np.fft.rfft(x, n = 2*x.shape[1], axis=1) )
-
-y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) # sum bass together
-
-print("binning")
-bins = math.log(y.shape[1], 2)*12
-y = log_sum2(y, bins)
-
-y = np.log10(y + 1e-4) * 20
-
-
-waterfall = y
-
-#y = ss.convolve2d(y, np.transpose([cfar_kernel( int(samplerate*0.01), int(samplerate*0.01) )]))
-print("convolving")
-#my_kernel = cfar_kernel( int(samplerate*0.1), int(samplerate*0.1) )
-
-my_kernel = cfar_kernel( int(0.05 / timestep_real), int(0.01 / timestep_real) )
-print("kernel len = ", len(my_kernel))
-y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, my_kernel, 'valid'), axis=0, arr=y )
-
-waterfall = waterfall[len(my_kernel):, :]
-time_fixup_s += len(my_kernel)*timestep_real
-
-print("maximum")
-y = np.fmax(y - 0, 0)
-
-if args.plot:
-	axs[0].imshow(waterfall, aspect='auto', extent=[0,waterfall.shape[1],waterfall.shape[0]*timestep_real,0]) #, vmax=1e+4, vmin=0)
-
-	axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8, extent=[0,y.shape[1],y.shape[0]*timestep_real,0])
-	axs[1].sharex(axs[0])
-	axs[1].sharey(axs[0])
-
-#y=np.apply_along_axis( lambda foo: find_local_maxima(foo), axis=0, arr=y) & (y>0)
-print("done")
-
-#y = np.apply_along_axis( lambda foo: ss.correlate(foo, foo[0:int(1/timestep_real)], 'valid'), axis=0, arr=y)
-
-min_bpm = 60
-max_bpm = 300
-correlation_window = int(20/timestep_real)
-
-#corr_data = y[ -int((60/min_bpm) / timestep_real)-correlation_window:, :]
-#corr_reference = corr_data[-correlation_window:, :]
-#correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
-#	foo[ -int((60/min_bpm) / timestep_real)-correlation_window:],
-#	foo[-correlation_window:], 'valid')), axis=0, arr=y)
-correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
-	foo[ 0 : int((60/min_bpm) / timestep_real)+correlation_window],
-	foo[ int((60/min_bpm) / timestep_real) :int((60/min_bpm) / timestep_real)+correlation_window],
-	'valid')), axis=0, arr=y)
-
-correlation_1d = np.sum(correlation, axis=1)
-
-crop = int(60/max_bpm/timestep_real)
-
-peak_limit = (np.quantile(correlation_1d[crop:], 0.9))
-
-peaks = ss.find_peaks(correlation_1d, height=peak_limit, prominence=peak_limit*0.3)[0]
-tempi = [ (60/(t*timestep_real)) for t in peaks]
-print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
-
-if args.bpm is None:
-	tempo = tempi[0]
-	if tempo > 240: tempo /= 2
-else:
-	tempo = float(args.bpm)
-	print("Using --bpm override")
-
-print(f"Using tempo {tempo}")
-
-
-periodicity = int(np.round(60/tempo/timestep_real))
-
-
-z = np.sum( y[:, 40:], axis=1)
-
-if args.plot:
-	axs[3].imshow(correlation, aspect='auto', extent=[0,correlation.shape[1],correlation.shape[0]*timestep_real,0])
-	axs[4].set_xlim(xmin=0, xmax=np.max(correlation_1d[crop:]))
-	axs[4].plot(correlation_1d, np.arange(len(correlation_1d))*timestep_real)
-	axs[4].axvline(peak_limit)
-
-	axs[4].axhline(periodicity*timestep_real)
-	axs[3].axhline(periodicity*timestep_real)
-
-	axs[4].sharey(axs[3])
-
-	#plt.xscale('log')
-	#plt.imshow(y, aspect='auto', vmax=1e+4, vmin=0)
-
-
-	#vmax = np.quantile(y, 0.999, method='inverted_cdf')
-	#vmax2 = np.quantile(y, 0.99, method='inverted_cdf')
-	#print(vmax, vmax2)
-	vmin = 0
-
-	print("imshow")
-
-	#plt.imshow(y, aspect='auto')
-
-
-	axs[2].plot(z, np.arange(len(z))*timestep_real, color='orange')
-	axs[2].plot(sn.gaussian_filter1d(z, 10/1000/timestep_real), np.arange(len(z))*timestep_real, color='blue')
-	axs[2].sharey(axs[0])
-
-z = sn.gaussian_filter1d(z, 10/1000/timestep_real)
-
-if args.plot:
-	for tempo_ in tempi:
-		periodicity_ = int(np.round(60/tempo_/timestep_real))
-		phase_window = int((5 / timestep_real) / periodicity_)*periodicity_
-		n = phase_window / periodicity_
-		phases = z[:phase_window].reshape(-1, periodicity_).sum(axis=0) / n
-		axs[5].plot(np.arange(len(phases))*timestep_real, phases, lw=1)
-
-phase_window = int((5 / timestep_real) / periodicity)*periodicity
-n = phase_window / periodicity
-phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
-if args.plot: axs[5].plot(np.arange(len(phases))*timestep_real, phases)
-
-
-
-#############
-
-
-# assume peak prominences p are distributed with a density of f(p)
-# i.e. P(p <= x) = integral of f(t)dt from -inf to x.
-#
-# Then if we have a peak with prominence p, what's the probability of this peak being caused by the
-# distribution (i.e. a "noisy" one, not a real peak)?
-#
-# Hypothesis Hi: peak i is the beat
-# Hypothesis H-: none of the peaks is the beat
-#
-# Let's say p_i := (loc_i, prom_i) is the list of our detected peaks and p = (p_1, ..., p_n)
-# P( p | Hi ) ~  product(f(prom_k)) / f(prom_i) * g(loc_i)
-# thus:
-# P( Hi | p ) = P ( p | Hi )
-
-print("Running statistics on the peaks")
-#z=z[0:8000]
-result = ss.find_peaks(z, height=0, distance = (0.01 / timestep_real), prominence=0)
-prominences = sorted(result[1]['prominences'])[::-1]
-lam = 1/np.mean(prominences)
-
-if args.plot:
-	fig = plt.figure()
-	ax = fig.add_subplot()
-	ax.plot(prominences, np.arange(len(prominences)))
-	ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(- (lam * np.arange(max(prominences)))**0.8 ))
-	ax.plot(np.arange(max(prominences)), len(prominences) * np.exp(-lam * np.arange(max(prominences)) ))
-
-
-
-serial_number = 1
-
-class BeatTracker:
-	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
-	def __init__(self, parent, timestep, sigma, lam, beat_loc, time_per_beat, confidence, last_prom, beats):
-		global serial_number
-		self.timestep = timestep
-		self.sigma = sigma
-		self.parent = parent
-		self.serial = serial_number
-		serial_number+=1
-		self.lam = lam
-		self.beat_loc = beat_loc
-		self.time_per_beat = time_per_beat
-		self.last_prom = last_prom
-		self.confidence = confidence
-		self.beats = beats[:]
-		self.used = False
-		if confidence > 0.05:
-			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
-
-	def search_interval(self):
-		expected_loc = self.beat_loc + self.time_per_beat
-		return (expected_loc - 300/1000/self.timestep, expected_loc+300/1000/self.timestep)
-
-	def next_beat(self, peak_locs, peak_prominences):
-		if self.time_per_beat < 50/1000/self.timestep:
-			# kill degenerate beat detectors that suggest an infinite tempo
-			return []
-
-
-		expected_loc = self.beat_loc + self.time_per_beat
-		peaks = []
-
-		for loc, prom in zip(peak_locs, peak_prominences):
-			t_diff = loc - expected_loc
-			relevance = math.exp(-0.5*(t_diff/self.sigma)**2) / (self.lam * math.exp(-self.lam * prom))
-			if loc > self.beat_loc + self.time_per_beat*0.1:
-				peaks.append((relevance, loc, True, prom))
-
-		print(f"expected = {expected_loc}, max = {max(peaks)}, lastprom = {self.last_prom}, relevance = {1 / (self.lam * math.exp(-self.lam * self.last_prom))}")
-		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom * MIN_REL_PROMINENCE)), expected_loc, False, 0))
-
-		relevance_sum = sum([r for r,l,f,p in peaks])
-		peaks = [(r/relevance_sum, l, f,p) for r,l,f,p in peaks]
-		peaks = sorted(peaks)[::-1]
-
-		print("sorted: ", peaks)
-
-		alpha = 0
-		confidence = self.confidence * (1-alpha) + 1 * alpha
-
-		tpb_alpha = 0.7
-		prom_alpha = 0.5
-		result = []
-		for rel, loc, found, prom in peaks:
-			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0])
-			conf_new = confidence * rel
-			print(f"spawning found={found}, rel={rel}, conf={conf_new}, prom={prom}")
-			prom_new = prom_alpha*self.last_prom + (1-prom_alpha)*prom
-			result.append(BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
-		return result
-
-def get_search_interval(trackers):
-	lo = 999999
-	hi = -1
-	for t in trackers:
-		l, h = t.search_interval()
-		lo = min(lo, l)
-		hi = max(hi, h)
-	return (int(lo), int(hi))
-
-t = np.argmax(phases)
-
-if args.offbeat:
-	t += int(periodicity/2)
-
-phase = np.argmax(phases)
-delta_t = periodicity
-
-SIGMA_MS=50 # 30 is good for most stuff
-
-trackers = [BeatTracker(0, timestep_real, SIGMA_MS/1000/timestep_real, lam, t, periodicity, 1, 0, [(t, False, periodicity, 0, 0)])]
-
-half_window = int(periodicity/2 * 0.7)
-
-if args.plot:
-	_, trackerax = plt.subplots(1,1)
-	trackerax2 = trackerax.twinx()
-
-beats = []
-greedy_beats = []
-scatter_xs_old = []
-scatter_ys_old = []
-window_start, window_end = 0, 0
-greedy_beats.append(trackers[0].beats[-1] + (trackers[0].confidence,))
-for i in range(9999):
-	if all([tr.search_interval()[1] > window_end for tr in trackers]):
-		print("============================")
-		window_start, window_end = get_search_interval(trackers)
-		window_start = min(max(window_start, 0), len(z))
-		window_end = min(max(window_end, 0), len(z))
-		print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
-		window = z[window_start : window_end]
-
-		if len(window) < 2:
-			print("hit the end, exiting")
-			break
-
-		result = ss.find_peaks(window, height=0, distance = (0.01 / timestep_real), prominence=0.05 * np.max(window))
-
-		peaks = result[0] + window_start
-		heights = result[1]['prominences']
-
-
-
-		#print(f"peaks = {peaks}, heights = {heights}")
-		print(f"found {len(peaks)} peaks")
-
-		if len(peaks) == 0: continue
-
-	print("------------------------------------")
-	trackers_new = []
-	n_updated = 0
-	for tr in trackers:
-		lo, hi = tr.search_interval()
-		if int(hi) <= window_end:
-			trackers_new += tr.next_beat(peaks, heights)
-			n_updated += 1
-		else:
-			trackers_new.append(tr)
-	trackers = trackers_new
-
-	if n_updated == 0:
-		print("no tracker was updated, exiting")
-		print(f"(window = {window_start}..{window_end}, len = {window_end-window_start})")
-		print([tr.search_interval() for tr in trackers])
-		break
-
-	DEDUP_LOC_THRESHOLD_MS = 10
-	trackers.sort(key = lambda t : -t.confidence)
-	trackers_dedup = []
-	for i in range(len(trackers)):
-		tr = trackers[i]
-		if tr is None: continue
-		loc = tr.beats[-1][0] * timestep_real * 1000
-
-		for j in range(i+1, len(trackers)):
-			candidate = trackers[j]
-			if candidate is None: continue
-			candidate_loc = candidate.beats[-1][0] * timestep_real * 1000
-
-			if abs(loc - candidate_loc) <= DEDUP_LOC_THRESHOLD_MS:
-				trackers[j] = None
-				tr.confidence += candidate.confidence
-
-		trackers_dedup.append(tr)
-
-	print(f"deduplication removed {len(trackers)-len(trackers_dedup)} of {len(trackers)} trackers")
-	trackers = trackers_dedup
-
-	trackers.sort(key = lambda t : -t.confidence)
-
-	trackers = trackers[0:10]
-	
-	sum_conf = sum([t.confidence for t in trackers])
-	for t in trackers: t.confidence /= sum_conf
-
-
-	print("confidences: ", ", ".join(["%5f" % t.confidence for t in trackers]))
-
-	if trackers[0].used == False:
-		greedy_beats.append(trackers[0].beats[-1] + (trackers[0].confidence,))
-	for tr in trackers:
-		tr.used = True
-
-	if args.plot and args.step_by_step:
-		trackerax.clear()
-		trackerax.set_xlim(0, args.duration)
-		trackerax.set_ylim(-0.05, 1.05)
-		trackerax2.clear()
-		trackerax2.set_xlim(0, args.duration)
-		trackerax2.set_ylim(-0.15, 1.15)
-
-		trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
-		trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
-
-		scatter_xs = []
-		scatter_ys = []
-		for t in trackers:
-			scatter_xs += [b[0]*timestep_real for b in t.beats]
-			scatter_ys += [t.confidence] * len(t.beats)
-
-		trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
-		trackerax.scatter(scatter_xs, scatter_ys, color='red')
-		scatter_xs_old = scatter_xs
-		scatter_ys_old = scatter_ys
-		if args.step_by_step:
-			plt.ginput()
-
-if args.plot:
+if args.plot and False: # FIXME
 	trackerax.clear()
 	trackerax.set_xlim(0, args.duration)
 	trackerax.set_ylim(-0.05, 1.05)
@@ -618,18 +523,21 @@ if args.plot:
 		scatter_ys += [t.confidence] * len(t.beats)
 	trackerax.scatter(scatter_xs, scatter_ys, color='red')
 
-for t in trackers:
+for t in bd.trackers:
 	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)
-	mbpm = (60/mbt/timestep_real)
+	mbpm = (60/mbt/bd.timestep_real)
 	print("tracker suggests %.2f bpm" % mbpm)
 
-beats=np.array( trackers[0].beats )
+beats=np.array( bd.trackers[0].beats ) # FIXME proper getter
+greedy_beats = bd.greedy_beats
+timestep_real = bd.timestep_real
 
 print("%.2f%%" % (len([1 for b in beats if b[1]]) / len(beats)*100))
 
 
 mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 
+axs = bd.axs
 if args.plot:
 	for t,f,tpb,prom_next,prom in beats:
 		axs[2].axhline(t*timestep_real, color='red', ls='-' if f else '-.')
@@ -644,13 +552,13 @@ if args.plot:
 		pass
 
 mean_bpm = (60/mean_beat_time/timestep_real)
-print(f"original tempo estimate = {tempo:.1f}bpm, actual mean tempo = {mean_bpm:.1f}")
+print(f"actual mean tempo = {mean_bpm:.1f}")
 
 errors = np.abs(([b[0] for b in beats] - (beats[0][0] + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
 errors_ms = errors*1000
 
 print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")
-print(f"lambda = {lam}")
+#print(f"lambda = {lam}")
 
 if args.plot:
 	fig, axs = plt.subplots(1,1)
@@ -689,7 +597,7 @@ def write_debugout(filename, data_orig, beats):
 	beep1 = beep1 * beep_window * 0.25
 	beep2 = beep2 * beep_window * 0.25
 
-
+	time_fixup_s = 0
 	for i, beat in enumerate(beats):
 		#if i%2 == 1 and t > 40_000: continue
 		t = beat[0]

@@ -108,8 +108,6 @@ class BeatDetector:
 		self.timestep_real = self.samplestep / samplerate
 		print(f"using a timestep of {self.timestep_real*1000:.3f}ms")
 		
-		self.latency = fft_window_ms/1000/2
-
 		self.fft_window_size = int(fft_window_ms / 1000 * samplerate)
 		self.fft_window = np.hamming(self.fft_window_size)
 		self.fft_size = 2 * self.fft_window_size
@@ -121,11 +119,13 @@ class BeatDetector:
 		self.plot = plot
 		self.step_by_step = step_by_step
 
-		self.audio_history = np.zeros(self.fft_window_size-1)
+		self.audio_history = np.zeros(0)
 		self.fft_history = np.zeros((len(self.cfar_kernel)-1, int(self.logbins)))
 		self.snr_history = np.zeros((0, int(self.logbins)))
 		self.snrsum_history = np.zeros(0)
 		self.snr_history_maxlen = samplerate*30
+
+		self.smoothing_sigma_ms = 10
 
 		self.next_sample = 0
 		self.next_timestep = 0
@@ -142,6 +142,17 @@ class BeatDetector:
 			self.axs = np.ndarray.flatten(np.concat([axs1,axs2]))
 			fig2 = plt.figure()
 			self.peakstatax = fig2.add_subplot()
+
+	def sample_from_timestep(ts):
+		#self.samplestep == self.timestep_real * self.samplerate
+		#self.fft_window_size = int(fft_window_ms / 1000 * samplerate)
+		return ts * self.samplestep + self.fft_window_size / 2
+
+	def timestep_from_sample(s):
+		return (s - self.fft_window_size/2) / self.samplestep
+	
+	def seconds_from_timestep(ts):
+		return self.sample_from_timestep(ts) / self.samplerate
 
 	def process(self, audio):
 		first_sample = self.next_sample
@@ -205,15 +216,16 @@ class BeatDetector:
 		if args.plot:
 			axs[2].clear()
 			axs[2].plot(self.snrsum_history, np.arange(len(self.snrsum_history))*self.timestep_real, color='orange')
-			axs[2].plot(sn.gaussian_filter1d(self.snrsum_history, 10/1000/self.timestep_real), np.arange(len(self.snr_history))*self.timestep_real, color='blue')
+			axs[2].plot(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history))*self.timestep_real, color='blue')
 			axs[2].sharey(axs[0])
 
-		#z = sn.gaussian_filter1d(z, 10/1000/timestep_real) FIXME
+		#z = sn.gaussian_filter1d(z, self.smoothing_sigma_ms/1000/timestep_real) FIXME
 
 		print("Running statistics on the peaks")
-		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history, 10/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
+		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
 		prominences = sorted(result[1]['prominences'])[::-1]
 		lam = 1/np.mean(prominences)
+		# TODO plot lambda over time
 		print("lambda = %.6f" % lam)
 
 		if self.need_tempo:
@@ -235,22 +247,30 @@ class BeatDetector:
 			self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
 
 		window_start, window_end = 0, 0
-		while True:
+
+		smoothing_sigma_timesteps = self.smoothing_sigma_ms / 1000 / self.timestep_real
+		smoothing_context_timesteps = int(math.ceil(3 * smoothing_sigma_timesteps))
+		while len(self.trackers) > 0:
 			if all([tr.search_interval()[1] > window_end for tr in self.trackers]):
 				print("============================")
 				window_start, window_end = get_search_interval(self.trackers)
-				window_start = max(window_start, self.next_timestep - len(self.snrsum_history))
+				window_start = max(window_start, self.next_timestep - len(self.snrsum_history) + smoothing_context_timesteps)
 				window_end = max(window_end, 0)
-				if window_end >= self.next_timestep:
+				if window_end + smoothing_context_timesteps >= self.next_timestep:
 					print("not enough audio, exiting")
 					break
 
 				print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
-				window = self.snrsum_history[window_start-(self.next_timestep-len(self.snrsum_history)) : window_end-(self.next_timestep-len(self.snrsum_history))]
+				window = self.snrsum_history[
+					window_start-(self.next_timestep-len(self.snrsum_history)) - smoothing_context_timesteps :
+					window_end  -(self.next_timestep-len(self.snrsum_history)) + smoothing_context_timesteps
+				]
+				window = sn.gaussian_filter1d(window, smoothing_sigma_timesteps)
+				window = window[smoothing_context_timesteps : -smoothing_context_timesteps]
+				assert len(window) == window_end - window_start
 				if len(window) == 0:
 					print("window is empty")
 					break
-				# FIXME gaussian filtering!
 
 				result = ss.find_peaks(window, height=0, distance = (0.01 / self.timestep_real), prominence=0.05 * np.max(window))
 

@@ -7,6 +7,7 @@ import scipy.ndimage as sn
 from numpy import log, exp
 import time
 import argparse
+from types import SimpleNamespace
 
 p = argparse.ArgumentParser()
 p.add_argument('file')
@@ -99,7 +100,7 @@ class BeatTracker:
 SIGMA_MS=50 # 30 is good for most stuff
 
 class BeatDetector:
-	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot=False, step_by_step=False):
+	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot_seconds = None, step_by_step=False):
 		self.samplerate = samplerate
 		self.force_bpm = force_bpm
 	
@@ -116,7 +117,7 @@ class BeatDetector:
 		self.cfar_kernel = cfar_kernel( int(cfar_avg_ms / 1000 / self.timestep_real), int(cfar_dead_ms / 1000 / self.timestep_real) )
 		print("kernel len = ", len(self.cfar_kernel))
 
-		self.plot = plot
+		self.plot = plot_seconds is not None
 		self.step_by_step = step_by_step
 
 		self.audio_history = np.zeros(0)
@@ -137,22 +138,48 @@ class BeatDetector:
 		self.greedy_beats = []
 
 		if self.plot:
+			plot_timesteps = int(plot_seconds / self.timestep_real)
+			self.plots = SimpleNamespace()
+			self.plots.waterfall = np.ndarray((plot_timesteps, int(self.logbins)))
+			self.plots.snr = np.ndarray((plot_timesteps,int(self.logbins)))
+			self.plots.snrsum = np.ndarray(plot_timesteps)
+			self.plots.lambdas = []
+			self.plots.tracker_respawns = []
+
 			fig, axs1 = plt.subplots(1,3)
 			fig, axs2 = plt.subplots(1,3)
 			self.axs = np.ndarray.flatten(np.concat([axs1,axs2]))
 			fig2 = plt.figure()
 			self.peakstatax = fig2.add_subplot()
 
-	def sample_from_timestep(ts):
+	def sample_from_timestep(self, ts):
 		#self.samplestep == self.timestep_real * self.samplerate
 		#self.fft_window_size = int(fft_window_ms / 1000 * samplerate)
 		return ts * self.samplestep + self.fft_window_size / 2
 
-	def timestep_from_sample(s):
+	def timestep_from_sample(self, s):
 		return (s - self.fft_window_size/2) / self.samplestep
 	
-	def seconds_from_timestep(ts):
+	def seconds_from_timestep(self, ts):
 		return self.sample_from_timestep(ts) / self.samplerate
+
+	def draw_plot(self):
+		fig, ax = plt.subplots(1,1)
+		ax.plot([x for x,y in self.plots.lambdas], [y for x,y in self.plots.lambdas])
+		for a,b in self.plots.tracker_respawns:
+			ax.axvspan(a,b, color=("yellow", 0.3))
+
+		axs = self.axs
+		axs[0].clear()
+		axs[1].clear()
+		axs[2].clear()
+		axs[0].imshow(self.plots.waterfall, aspect='auto', extent=[0,self.plots.waterfall.shape[1],self.plots.waterfall.shape[0]*self.timestep_real,0]) #, vmax=1e+4, vmin=0)
+		axs[1].imshow(self.plots.snr, aspect='auto', vmin=0, vmax=np.quantile(self.plots.snr, 0.97)*0.8, extent=[0,self.plots.snr.shape[1],self.plots.snr.shape[0]*self.timestep_real,0])
+		axs[1].sharex(axs[0])
+		axs[1].sharey(axs[0])
+		axs[2].plot(self.snrsum_history, np.arange(len(self.snrsum_history))*self.timestep_real, color='orange')
+		axs[2].plot(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history))*self.timestep_real, color='blue')
+		axs[2].sharey(axs[0])
 
 	def process(self, audio):
 		first_sample = self.next_sample
@@ -184,21 +211,21 @@ class BeatDetector:
 		print(f"fft history len = {self.fft_history.shape[0]} timesteps")
 		
 		print("convolving")
-		y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
+		if self.fft_history.shape[0] >= self.cfar_kernel.shape[0]:
+			y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
+		else:
+			print("not enough fft history to perform a cfar, returning")
+			return
 
+		print(y.shape, waterfall.shape, self.cfar_kernel.shape)
 		assert y.shape[0] == waterfall.shape[0]
 
 		print("maximum")
 		y = np.fmax(y - 0, 0)
 
 		if args.plot:
-			axs = self.axs
-			axs[0].clear()
-			axs[1].clear()
-			axs[0].imshow(waterfall, aspect='auto', extent=[0,waterfall.shape[1],waterfall.shape[0]*self.timestep_real,0]) #, vmax=1e+4, vmin=0)
-			axs[1].imshow(y, aspect='auto', vmin=0, vmax=np.quantile(y, 0.97)*0.8, extent=[0,y.shape[1],y.shape[0]*self.timestep_real,0])
-			axs[1].sharex(axs[0])
-			axs[1].sharey(axs[0])
+			self.plots.waterfall[self.next_timestep-waterfall.shape[0] : self.next_timestep, :] = waterfall
+
 
 		print("done")
 
@@ -214,18 +241,16 @@ class BeatDetector:
 		print(f"snr history len = {self.snr_history.shape[0]} timesteps")
 
 		if args.plot:
-			axs[2].clear()
-			axs[2].plot(self.snrsum_history, np.arange(len(self.snrsum_history))*self.timestep_real, color='orange')
-			axs[2].plot(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history))*self.timestep_real, color='blue')
-			axs[2].sharey(axs[0])
-
-		#z = sn.gaussian_filter1d(z, self.smoothing_sigma_ms/1000/timestep_real) FIXME
+			self.plots.snr[self.next_timestep-self.snr_history.shape[0] : self.next_timestep, :] = self.snr_history
+			self.plots.snrsum[self.next_timestep-self.snrsum_history.shape[0] : self.next_timestep] = self.snrsum_history
+			
 
 		print("Running statistics on the peaks")
 		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
 		prominences = sorted(result[1]['prominences'])[::-1]
 		lam = 1/np.mean(prominences)
-		# TODO plot lambda over time
+		if self.plot:
+			self.plots.lambdas.append((self.next_timestep-1, lam))
 		print("lambda = %.6f" % lam)
 
 		if self.need_tempo:
@@ -233,12 +258,14 @@ class BeatDetector:
 			if missing > 0:
 				print(f"Tempo estimation pending, need {missing} more samples")
 			else:
-				tempo, phase = result
+				tempo, phase, amplitude = result
 				phase += (self.next_timestep - len(self.snrsum_history))
 				periodicity = int(np.round(60/tempo/self.timestep_real))
 				print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
 
-				self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, 0, [(phase, False, periodicity, 0, 0)])]
+				if self.plot:
+					self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history), self.next_timestep))
+				self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(phase, False, periodicity, amplitude, amplitude)])]
 
 				self.need_tempo = False
 
@@ -427,7 +454,8 @@ class BeatDetector:
 		phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
 		if args.plot: axs[5].plot(np.arange(len(phases))*self.timestep_real, phases)
 
-		return (periodicity, np.argmax(phases)), 0
+		phase = np.argmax(phases)
+		return (periodicity, phase, phases[phase]), 0
 
 
 
@@ -517,7 +545,7 @@ data = data_orig[:,0]
 print(data.shape)
 
 
-bd = BeatDetector(samplerate, plot=args.plot)
+bd = BeatDetector(samplerate, plot_seconds = data.shape[0] / samplerate)
 
 for i in range(40):
 	bd.process(data[i*samplerate:samplerate*(i+1)])
@@ -559,6 +587,7 @@ mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 
 axs = bd.axs
 if args.plot:
+	bd.draw_plot()
 	for t,f,tpb,prom_next,prom in beats:
 		axs[2].axhline(t*timestep_real, color='red', ls='-' if f else '-.')
 		axs[2].scatter([prom_next,prom_next * MIN_REL_PROMINENCE], [(t+tpb)*timestep_real]*2, color='blue')

@@ -97,7 +97,7 @@ class BeatTracker:
 			result.append(BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
 		return result
 
-SIGMA_MS=50 # 30 is good for most stuff
+SIGMA_MS=30 # 30 is good for most stuff
 
 class BeatDetector:
 	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot_seconds = None, step_by_step=False):

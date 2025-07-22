@@ -12,7 +12,7 @@ from types import SimpleNamespace
 p = argparse.ArgumentParser()
 p.add_argument('file')
 p.add_argument('start')
-p.add_argument('--bpm')
+p.add_argument('--bpm', type=float)
 p.add_argument('--offbeat', action='store_true')
 p.add_argument('--duration', type=float, default=20)
 p.add_argument('--step-by-step', action='store_true', default=False)
@@ -224,7 +224,7 @@ class BeatDetector:
 		if self.verbose: print("maximum")
 		y = np.fmax(y - 0, 0)
 
-		if args.plot:
+		if self.plot:
 			self.plots.waterfall[self.next_timestep-waterfall.shape[0] : self.next_timestep, :] = waterfall
 
 
@@ -241,7 +241,7 @@ class BeatDetector:
 
 		if self.verbose: print(f"snr history len = {self.snr_history.shape[0]} timesteps")
 
-		if args.plot:
+		if self.plot:
 			self.plots.snr[self.next_timestep-self.snr_history.shape[0] : self.next_timestep, :] = self.snr_history
 			self.plots.snrsum[self.next_timestep-self.snrsum_history.shape[0] : self.next_timestep] = self.snrsum_history
 			
@@ -271,7 +271,7 @@ class BeatDetector:
 
 					self.need_tempo = False
 
-			if args.plot:
+			if self.plot:
 				self.peakstatax.plot(prominences, np.arange(len(prominences))/len(prominences))
 				self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
 		else:
@@ -365,7 +365,7 @@ class BeatDetector:
 			for tr in self.trackers:
 				tr.used = True
 
-			if args.plot and args.step_by_step:
+			if self.plot and args.step_by_step:
 				trackerax.clear()
 				trackerax.set_xlim(0, args.duration)
 				trackerax.set_ylim(-0.05, 1.05)
@@ -422,12 +422,12 @@ class BeatDetector:
 		tempi = [ (60/(t*self.timestep_real)) for t in peaks]
 		print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
 
-		if args.bpm is None:
+		if force_bpm is None:
 			tempo = tempi[0]
 			if tempo > 240: tempo /= 2
 		else:
-			tempo = float(args.bpm)
-			print("Using --bpm override")
+			tempo = force_bpm
+			print("Using bpm override")
 
 		print(f"Using tempo {tempo}")
 
@@ -456,21 +456,10 @@ class BeatDetector:
 		phase_window = int((5 / self.timestep_real) / periodicity)*periodicity
 		n = phase_window / periodicity
 		phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
-		if args.plot: axs[5].plot(np.arange(len(phases))*self.timestep_real, phases)
+		if self.plot: axs[5].plot(np.arange(len(phases))*self.timestep_real, phases)
 
 		phase = np.argmax(phases)
 		return (periodicity, phase, phases[phase]), 0
-
-
-
-#print_orig = print
-#last_timestamp = None
-#def print(*args, **kwargs):
-#	global last_timestamp
-#	if last_timestamp is None: last_timestamp = time.time()
-#	diff = time.time() - last_timestamp
-#	last_timestamp = time.time()
-#	print_orig(f'[+{diff*1000:7.2f}ms]', *args, **kwargs)
 
 def cfar_kernel(n, guard):
 	return np.array( [1] + [0]*guard + [-1/n]*n )
@@ -550,7 +539,7 @@ data = data_orig[:,0]
 print(data.shape)
 
 
-bd = BeatDetector(samplerate, plot_seconds = data.shape[0] / samplerate if args.plot else None)
+bd = BeatDetector(samplerate, plot_seconds = data.shape[0] / samplerate if args.plot else None, force_bpm = args.bpm, timestep_desired_ms = args.timestep)
 
 for i in range(math.ceil(40 * samplerate / args.chunksize)):
 	bd.process(data[i*args.chunksize:args.chunksize*(i+1)])

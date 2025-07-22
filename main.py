@@ -260,10 +260,10 @@ class BeatDetector:
 				if missing > 0:
 					if self.verbose: print(f"Tempo estimation pending, need {missing} more samples")
 				else:
-					tempo, phase, amplitude = result
+					periodicity, phase, amplitude = result
 					phase += (self.next_timestep - len(self.snrsum_history))
-					periodicity = int(np.round(60/tempo/self.timestep_real))
-					if self.verbose: print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
+					tempo = 60/periodicity/self.timestep_real
+					print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
 
 					if self.plot:
 						self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history), self.next_timestep))

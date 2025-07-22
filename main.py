@@ -18,6 +18,7 @@ p.add_argument('--duration', type=float, default=20)
 p.add_argument('--step-by-step', action='store_true', default=False)
 p.add_argument('--plot', action='store_true', default=False)
 p.add_argument('--timestep', type=float, default=1)
+p.add_argument('--chunksize', type=int, default=-1)
 args = p.parse_args()
 
 MIN_REL_PROMINENCE = 0.25
@@ -100,9 +101,10 @@ class BeatTracker:
 SIGMA_MS=30 # 30 is good for most stuff
 
 class BeatDetector:
-	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot_seconds = None, step_by_step=False):
+	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot_seconds = None, step_by_step=False, verbose=False):
 		self.samplerate = samplerate
 		self.force_bpm = force_bpm
+		self.verbose = verbose
 	
 		timestep_desired = timestep_desired_ms / 1000
 		self.samplestep = int(samplerate * timestep_desired)
@@ -184,7 +186,7 @@ class BeatDetector:
 	def process(self, audio):
 		first_sample = self.next_sample
 		self.next_sample += len(audio)
-		print(f"consuming {len(audio)} samples, starting at {first_sample}")
+		if self.verbose: print(f"consuming {len(audio)} samples, starting at {first_sample}")
 
 		data = np.concatenate([self.audio_history, audio])
 		# audio[-1] is at t = self.next_sample samples
@@ -193,12 +195,12 @@ class BeatDetector:
 		x = overlapping_windows(data, self.fft_window, self.samplestep)
 		self.next_timestep += x.shape[0]
 		self.audio_history = data[self.samplestep * x.shape[0] : ]
-		print(f"got {x.shape[0]} new timesteps; audio history len = {len(self.audio_history)}")
+		if self.verbose: print(f"got {x.shape[0]} new timesteps; audio history len = {len(self.audio_history)}")
 
 		y = np.absolute( np.fft.rfft(x, n = self.fft_size, axis=1) )
-		y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) # sum bass together
+		y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) / 10 # sum bass together
 
-		print("binning")
+		if self.verbose: print("binning")
 		y = log_sum2(y, self.logbins)
 
 		y = np.log10(y + 1e-4) * 20
@@ -208,28 +210,27 @@ class BeatDetector:
 		# x[-1] and y[-1] is at t = self.next_timestep timesteps
 
 		self.fft_history = np.concatenate([self.fft_history[-(len(self.cfar_kernel)-1):, :], y], axis=0)
-		print(f"fft history len = {self.fft_history.shape[0]} timesteps")
+		if self.verbose: print(f"fft history len = {self.fft_history.shape[0]} timesteps")
 		
-		print("convolving")
+		if self.verbose: print("convolving")
 		if self.fft_history.shape[0] >= self.cfar_kernel.shape[0]:
-			y = np.apply_along_axis( lambda foo: ss.oaconvolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
+			y = np.apply_along_axis( lambda foo: np.convolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
 		else:
-			print("not enough fft history to perform a cfar, returning")
+			if self.verbose: print("not enough fft history to perform a cfar, returning")
 			return
 
-		print(y.shape, waterfall.shape, self.cfar_kernel.shape)
 		assert y.shape[0] == waterfall.shape[0]
 
-		print("maximum")
+		if self.verbose: print("maximum")
 		y = np.fmax(y - 0, 0)
 
 		if args.plot:
 			self.plots.waterfall[self.next_timestep-waterfall.shape[0] : self.next_timestep, :] = waterfall
 
 
-		print("done")
+		if self.verbose: print("done")
 
-		z = np.sum( y[:, 40:], axis=1)
+		z = np.sum( y[:, 0:], axis=1)
 
 		self.snr_history = np.concatenate([self.snr_history, y], axis=0)[-self.snr_history_maxlen:,:]
 		assert self.snr_history.shape[0] <= self.snr_history_maxlen
@@ -238,40 +239,43 @@ class BeatDetector:
 		
 		# x[-1], y[-1], z[-1], self.snr_history[-1] and self.snrsum_history[-1] is at t = self.next_timestep timesteps
 
-		print(f"snr history len = {self.snr_history.shape[0]} timesteps")
+		if self.verbose: print(f"snr history len = {self.snr_history.shape[0]} timesteps")
 
 		if args.plot:
 			self.plots.snr[self.next_timestep-self.snr_history.shape[0] : self.next_timestep, :] = self.snr_history
 			self.plots.snrsum[self.next_timestep-self.snrsum_history.shape[0] : self.next_timestep] = self.snrsum_history
 			
 
-		print("Running statistics on the peaks")
+		if self.verbose: print("Running statistics on the peaks")
 		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
 		prominences = sorted(result[1]['prominences'])[::-1]
-		lam = 1/np.mean(prominences)
-		if self.plot:
-			self.plots.lambdas.append((self.next_timestep-1, lam))
-		print("lambda = %.6f" % lam)
+		if len(prominences) > 0:
+			lam = 1/np.mean(prominences)
+			if self.plot:
+				self.plots.lambdas.append((self.next_timestep-1, lam))
+			if self.verbose: print("lambda = %.6f" % lam)
 
-		if self.need_tempo:
-			result, missing = self.estimate_tempo_and_phase(self.snr_history, self.snrsum_history, self.force_bpm)
-			if missing > 0:
-				print(f"Tempo estimation pending, need {missing} more samples")
-			else:
-				tempo, phase, amplitude = result
-				phase += (self.next_timestep - len(self.snrsum_history))
-				periodicity = int(np.round(60/tempo/self.timestep_real))
-				print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
+			if self.need_tempo:
+				result, missing = self.estimate_tempo_and_phase(self.snr_history, self.snrsum_history, self.force_bpm)
+				if missing > 0:
+					if self.verbose: print(f"Tempo estimation pending, need {missing} more samples")
+				else:
+					tempo, phase, amplitude = result
+					phase += (self.next_timestep - len(self.snrsum_history))
+					periodicity = int(np.round(60/tempo/self.timestep_real))
+					if self.verbose: print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
 
-				if self.plot:
-					self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history), self.next_timestep))
-				self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(phase, False, periodicity, amplitude, amplitude)])]
+					if self.plot:
+						self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history), self.next_timestep))
+					self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(phase, False, periodicity, amplitude, amplitude)])]
 
-				self.need_tempo = False
+					self.need_tempo = False
 
-		if args.plot:
-			self.peakstatax.plot(prominences, np.arange(len(prominences))/len(prominences))
-			self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
+			if args.plot:
+				self.peakstatax.plot(prominences, np.arange(len(prominences))/len(prominences))
+				self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
+		else:
+			if self.verbose: print("ehhh too few prominences")
 
 		window_start, window_end = 0, 0
 
@@ -279,15 +283,15 @@ class BeatDetector:
 		smoothing_context_timesteps = int(math.ceil(3 * smoothing_sigma_timesteps))
 		while len(self.trackers) > 0:
 			if all([tr.search_interval()[1] > window_end for tr in self.trackers]):
-				print("============================")
+				if self.verbose: print("============================")
 				window_start, window_end = get_search_interval(self.trackers)
 				window_start = max(window_start, self.next_timestep - len(self.snrsum_history) + smoothing_context_timesteps)
 				window_end = max(window_end, 0)
 				if window_end + smoothing_context_timesteps >= self.next_timestep:
-					print("not enough audio, exiting")
+					if self.verbose: print("not enough audio, exiting")
 					break
 
-				print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
+				if self.verbose: print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
 				window = self.snrsum_history[
 					window_start-(self.next_timestep-len(self.snrsum_history)) - smoothing_context_timesteps :
 					window_end  -(self.next_timestep-len(self.snrsum_history)) + smoothing_context_timesteps
@@ -296,17 +300,17 @@ class BeatDetector:
 				window = window[smoothing_context_timesteps : -smoothing_context_timesteps]
 				assert len(window) == window_end - window_start
 				if len(window) == 0:
-					print("window is empty")
+					if self.verbose: print("window is empty")
 					break
 
 				result = ss.find_peaks(window, height=0, distance = (0.01 / self.timestep_real), prominence=0.05 * np.max(window))
 
 				peaks = result[0] + window_start
 				heights = result[1]['prominences']
-				print(f"found {len(peaks)} peaks")
+				if self.verbose: print(f"found {len(peaks)} peaks")
 				if len(peaks) == 0: continue
 
-			print("------------------------------------")
+			if self.verbose: print("------------------------------------")
 			trackers_new = []
 			n_updated = 0
 			for tr in self.trackers:
@@ -319,9 +323,9 @@ class BeatDetector:
 			self.trackers = trackers_new
 
 			if n_updated == 0:
-				print("no tracker was updated, exiting")
-				print(f"(window = {window_start}..{window_end}, len = {window_end-window_start})")
-				print([tr.search_interval() for tr in self.trackers])
+				if self.verbose: print("no tracker was updated, exiting")
+				if self.verbose: print(f"(window = {window_start}..{window_end}, len = {window_end-window_start})")
+				if self.verbose: print([tr.search_interval() for tr in self.trackers])
 				assert False # FIXME
 
 			DEDUP_LOC_THRESHOLD_MS = 10
@@ -343,7 +347,7 @@ class BeatDetector:
 
 				trackers_dedup.append(tr)
 
-			print(f"deduplication removed {len(self.trackers)-len(trackers_dedup)} of {len(self.trackers)} trackers")
+			if self.verbose: print(f"deduplication removed {len(self.trackers)-len(trackers_dedup)} of {len(self.trackers)} trackers")
 			self.trackers = trackers_dedup
 
 			self.trackers.sort(key = lambda t : -t.confidence)
@@ -354,7 +358,7 @@ class BeatDetector:
 			for t in self.trackers: t.confidence /= sum_conf
 
 
-			print("confidences: ", ", ".join(["%5f" % t.confidence for t in self.trackers]))
+			if self.verbose: print("confidences: ", ", ".join(["%5f" % t.confidence for t in self.trackers]))
 
 			if self.trackers[0].used == False:
 				self.greedy_beats.append(self.trackers[0].beats[-1] + (self.trackers[0].confidence,))
@@ -459,20 +463,17 @@ class BeatDetector:
 
 
 
-print_orig = print
-last_timestamp = None
-def print(*args, **kwargs):
-	global last_timestamp
-	if last_timestamp is None: last_timestamp = time.time()
-	diff = time.time() - last_timestamp
-	last_timestamp = time.time()
-	print_orig(f'[+{diff*1000:7.2f}ms]', *args, **kwargs)
+#print_orig = print
+#last_timestamp = None
+#def print(*args, **kwargs):
+#	global last_timestamp
+#	if last_timestamp is None: last_timestamp = time.time()
+#	diff = time.time() - last_timestamp
+#	last_timestamp = time.time()
+#	print_orig(f'[+{diff*1000:7.2f}ms]', *args, **kwargs)
 
 def cfar_kernel(n, guard):
 	return np.array( [1] + [0]*guard + [-1/n]*n )
-
-def find_local_maxima(a):
-	return (np.convolve(a, [1,-1])[:-1]>=0) & (np.convolve(a, [1,-1])[1:]<=0)
 
 def log_avg(a, bins):
 	l = log(a.shape[1]) / bins
@@ -517,6 +518,8 @@ def log_sum2(a, bins):
 	return result
 
 def overlapping_windows(data, window, step):
+	if len(data) < len(window):
+		return np.zeros((0, len(window)))
 	N = len(window)
 	step=int(step)
 	return np.lib.stride_tricks.as_strided(data,( (len(data)-len(window)) // step + 1, N), [data.strides[0]*step, data.strides[0]]) * window
@@ -530,6 +533,8 @@ t0=int(args.start)
 print(len(data_orig))
 print(data_orig[1])
 print(samplerate)
+
+if args.chunksize < 0: args.chunksize = samplerate
 
 print("numpy-fying")
 data_orig = np.array(data_orig)
@@ -545,10 +550,10 @@ data = data_orig[:,0]
 print(data.shape)
 
 
-bd = BeatDetector(samplerate, plot_seconds = data.shape[0] / samplerate)
+bd = BeatDetector(samplerate, plot_seconds = data.shape[0] / samplerate if args.plot else None)
 
-for i in range(40):
-	bd.process(data[i*samplerate:samplerate*(i+1)])
+for i in range(math.ceil(40 * samplerate / args.chunksize)):
+	bd.process(data[i*args.chunksize:args.chunksize*(i+1)])
 	if args.plot: plt.show(block=False)
 
 
@@ -585,8 +590,8 @@ print("%.2f%%" % (len([1 for b in beats if b[1]]) / len(beats)*100))
 
 mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
 
-axs = bd.axs
 if args.plot:
+	axs = bd.axs
 	bd.draw_plot()
 	for t,f,tpb,prom_next,prom in beats:
 		axs[2].axhline(t*timestep_real, color='red', ls='-' if f else '-.')
@@ -661,8 +666,16 @@ def write_debugout(filename, data_orig, beats):
 
 	sf.write(filename, data_debug, samplerate)
 
+def write_beats(beats, filename):
+	with open(filename, 'w') as f:
+		for b in beats:
+			f.write("%d\n" % b[0])
+
 write_debugout("out.mp3", data_orig, beats)
 write_debugout("out_greedy.mp3", data_orig, greedy_beats)
+
+write_beats(beats, "out.txt")
+write_beats(greedy_beats, "out_greedy.txt")
 
 if args.plot:
 	plt.show()

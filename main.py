@@ -8,6 +8,7 @@ from numpy import log, exp
 import time
 import argparse
 from types import SimpleNamespace
+import jack
 
 p = argparse.ArgumentParser()
 p.add_argument('file')
@@ -54,11 +55,13 @@ class BeatTracker:
 		self.beats = beats[:]
 		self.used = False
 		if confidence > 0.05:
-			print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
+			#print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
+			pass
 
 	def search_interval(self):
 		expected_loc = self.beat_loc + self.time_per_beat
-		return (expected_loc - 300/1000/self.timestep, expected_loc+300/1000/self.timestep)
+		win_timesteps = self.sigma * 4
+		return (expected_loc - win_timesteps, expected_loc+win_timesteps)
 
 	def next_beat(self, peak_locs, peak_prominences):
 		if self.time_per_beat < 50/1000/self.timestep:
@@ -75,14 +78,14 @@ class BeatTracker:
 			if loc > self.beat_loc + self.time_per_beat*0.1:
 				peaks.append((relevance, loc, True, prom))
 
-		print(f"expected = {expected_loc}, max = {max(peaks)}, lastprom = {self.last_prom}, relevance = {1 / (self.lam * math.exp(-self.lam * self.last_prom))}")
+		#print(f"expected = {expected_loc}, max = {max(peaks+[(-999,0, False, 0)])}, lastprom = {self.last_prom}, relevance = {1 / (self.lam * math.exp(-self.lam * self.last_prom))}")
 		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom * MIN_REL_PROMINENCE)), expected_loc, False, 0))
 
 		relevance_sum = sum([r for r,l,f,p in peaks])
 		peaks = [(r/relevance_sum, l, f,p) for r,l,f,p in peaks]
 		peaks = sorted(peaks)[::-1]
 
-		print("sorted: ", peaks)
+		#print("sorted: ", peaks)
 
 		alpha = 0
 		confidence = self.confidence * (1-alpha) + 1 * alpha
@@ -93,7 +96,7 @@ class BeatTracker:
 		for rel, loc, found, prom in peaks:
 			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0])
 			conf_new = confidence * rel
-			print(f"spawning found={found}, rel={rel}, conf={conf_new}, prom={prom}")
+			#print(f"spawning found={found}, rel={rel}, conf={conf_new}, prom={prom}")
 			prom_new = prom_alpha*self.last_prom + (1-prom_alpha)*prom
 			result.append(BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
 		return result
@@ -258,7 +261,7 @@ class BeatDetector:
 			if self.need_tempo:
 				result, missing = self.estimate_tempo_and_phase(self.snr_history, self.snrsum_history, self.force_bpm)
 				if missing > 0:
-					if self.verbose: print(f"Tempo estimation pending, need {missing} more samples")
+					print(f"Tempo estimation pending, need {missing} more samples")
 				else:
 					periodicity, phase, amplitude = result
 					phase += (self.next_timestep - len(self.snrsum_history))
@@ -396,7 +399,7 @@ class BeatDetector:
 		y = snr_history # FIXME naming
 		z = snrsum_history # FIXME naming
 
-		correlation_window = int(20/self.timestep_real)
+		correlation_window = int(5/self.timestep_real)
 		rows_needed = correlation_window + int((60/min_bpm)/self.timestep_real)
 		if snr_history.shape[0] < rows_needed:
 			return None, rows_needed - snr_history.shape[0]
@@ -513,6 +516,84 @@ def overlapping_windows(data, window, step):
 	step=int(step)
 	return np.lib.stride_tricks.as_strided(data,( (len(data)-len(window)) // step + 1, N), [data.strides[0]*step, data.strides[0]]) * window
 
+if args.file == 'jack':
+	client = jack.Client('beatdetect')
+	audio_in = client.inports.register('audio_in')
+	click_out = client.outports.register('click_out')
+
+	total_samples = 0
+	last_greedy_beat = 0
+	audio_backlog = np.zeros(4096*2)
+	audio_backlog_pos = 0
+
+	upcoming_beats = []
+	current_beats = []
+
+	@client.set_process_callback
+	def process(frames):
+		global total_samples
+		global last_greedy_beat
+		global audio_backlog_pos
+		global audio_backlog
+		global upcoming_beats
+		global current_beats
+
+		if frames == 0: return
+
+		data = client.inports[0].get_array()
+		assert len(data) == frames
+		now = total_samples / samplerate
+		now_frames = total_samples
+		total_samples += frames
+		#assert all([b <= now for b in current_beats])
+
+		#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")
+
+		audio_backlog[audio_backlog_pos : audio_backlog_pos+frames] = data
+		audio_backlog_pos += frames
+
+		if audio_backlog_pos + frames > len(audio_backlog):
+			bd.process(audio_backlog[0:audio_backlog_pos])
+			# FIXME this drops beats if there are more than one beat in the time frame.
+			if len(bd.greedy_beats) > 0:
+				if bd.greedy_beats[-1][0] != last_greedy_beat:
+					last_greedy_beat = bd.greedy_beats[-1][0]
+					beat_s = bd.greedy_beats[-1][0] * bd.timestep_real
+					#print(f"beat at {bd.greedy_beats[-1][0]:7.1f}, {beat_s:5.1f}s, now = {now:5.1f}s, lag = {now-beat_s:6.3}s, frames = {frames}, audio_backlog_pos = {audio_backlog_pos}")
+
+					upcoming_beats = [(bd.greedy_beats[-1][0] + i * bd.greedy_beats[-1][2]) * bd.timestep_real * samplerate for i in range(20)]
+					upcoming_beats = [b for b in upcoming_beats if b >= now_frames and all([b >= cb + 0.7*bd.greedy_beats[-1][2] for cb in current_beats])]
+					#print(current_beats, upcoming_beats)
+			audio_backlog_pos = 0
+
+		CLICK_FRAMES=int(0.04 * 48000)
+		current_beats = [b for b in current_beats if b >= now_frames - CLICK_FRAMES]
+		current_beats += [b for b in upcoming_beats if b <= now_frames+frames]
+		upcoming_beats = [b for b in upcoming_beats if b >  now_frames+frames]
+		#print (now_frames, current_beats, upcoming_beats)
+		
+		clicks = client.outports[0].get_array()
+		SINE_PERIOD_FRAMES = int(48000//880)
+		total_samples=int(total_samples)
+		clicks[:] = (np.sin(np.arange(total_samples%SINE_PERIOD_FRAMES, total_samples % SINE_PERIOD_FRAMES +frames) /SINE_PERIOD_FRAMES*2*3.141592654))
+
+		click_mask = np.zeros(frames)
+		for b in current_beats:
+			b=int(b)
+			click_mask[b-now_frames : b-now_frames+CLICK_FRAMES] += 0.5
+
+		clicks[:] *= click_mask
+
+
+	samplerate = client.samplerate
+	bd = BeatDetector(samplerate, force_bpm = args.bpm, timestep_desired_ms = args.timestep)
+
+	with client:
+		input()
+
+	exit(0)
+
+# else
 
 print("reading file")
 

@@ -10,6 +10,7 @@ import argparse
 from types import SimpleNamespace
 import jack
 
+from numpy_ringbuf import Ringbuf2D, Ringbuf1D
 from timetracker import TimeTracker
 
 p = argparse.ArgumentParser()
@@ -131,9 +132,8 @@ class BeatDetector:
 
 		self.audio_history = np.zeros(0)
 		self.fft_history = np.zeros((len(self.cfar_kernel)-1, int(self.logbins)))
-		self.snr_history = np.zeros((0, int(self.logbins)))
-		self.snrsum_history = np.zeros(0)
-		self.snr_history_maxlen = samplerate*30
+		self.snr_history = Ringbuf2D(samplerate*30, int(self.logbins))
+		self.snrsum_history = Ringbuf1D(samplerate*30)
 
 		self.smoothing_sigma_ms = 10
 
@@ -186,8 +186,8 @@ class BeatDetector:
 		axs[1].imshow(self.plots.snr, aspect='auto', vmin=0, vmax=np.quantile(self.plots.snr, 0.97)*0.8, extent=[0,self.plots.snr.shape[1],self.plots.snr.shape[0]*self.timestep_real,0])
 		axs[1].sharex(axs[0])
 		axs[1].sharey(axs[0])
-		axs[2].plot(self.snrsum_history, np.arange(len(self.snrsum_history))*self.timestep_real, color='orange')
-		axs[2].plot(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history))*self.timestep_real, color='blue')
+		axs[2].plot(self.snrsum_history.get(), np.arange(len(self.snrsum_history.get()))*self.timestep_real, color='orange')
+		axs[2].plot(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history.get()))*self.timestep_real, color='blue')
 		axs[2].sharey(axs[0])
 
 	def process(self, audio):
@@ -247,23 +247,21 @@ class BeatDetector:
 
 		z = np.sum( y[:, 0:], axis=1)
 
-		tt.begin('snr(sum) history') # FIXME scales poorly
-		self.snr_history = np.concatenate([self.snr_history, y], axis=0)[-self.snr_history_maxlen:,:]
-		assert self.snr_history.shape[0] <= self.snr_history_maxlen
-		self.snrsum_history = np.concatenate([self.snrsum_history, z])[-self.snr_history_maxlen:]
-		assert len(self.snrsum_history) == self.snr_history.shape[0]
+		tt.begin('snr(sum) history')
+		self.snr_history.append(y)
+		self.snrsum_history.append(z)
 		
-		# x[-1], y[-1], z[-1], self.snr_history[-1] and self.snrsum_history[-1] is at t = self.next_timestep timesteps
+		# x[-1], y[-1], z[-1], self.snr_history.get()[-1] and self.snrsum_history.get()[-1] is at t = self.next_timestep timesteps
 
-		if self.verbose: print(f"snr history len = {self.snr_history.shape[0]} timesteps")
+		if self.verbose: print(f"snr history len = {self.snr_history.get().shape[0]} timesteps")
 
 		if self.plot:
-			self.plots.snr[self.next_timestep-self.snr_history.shape[0] : self.next_timestep, :] = self.snr_history
-			self.plots.snrsum[self.next_timestep-self.snrsum_history.shape[0] : self.next_timestep] = self.snrsum_history
+			self.plots.snr[self.next_timestep-self.snr_history.get().shape[0] : self.next_timestep, :] = self.snr_history.get()
+			self.plots.snrsum[self.next_timestep-self.snrsum_history.get().shape[0] : self.next_timestep] = self.snrsum_history.get()
 			
 		tt.begin('peak stats') # FIXME scales not so well
 		if self.verbose: print("Running statistics on the peaks")
-		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
+		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
 		prominences = sorted(result[1]['prominences'])[::-1]
 		if len(prominences) > 0:
 			lam = 1/np.mean(prominences)
@@ -273,17 +271,17 @@ class BeatDetector:
 
 			if self.need_tempo:
 				tt.begin('tempo estimation')
-				result, missing = self.estimate_tempo_and_phase(self.snr_history, self.snrsum_history, self.force_bpm)
+				result, missing = self.estimate_tempo_and_phase(self.snr_history.get(), self.snrsum_history.get(), self.force_bpm)
 				if missing > 0:
 					print(f"Tempo estimation pending, need {missing} more samples")
 				else:
 					periodicity, phase, amplitude = result
-					phase += (self.next_timestep - len(self.snrsum_history))
+					phase += (self.next_timestep - len(self.snrsum_history.get()))
 					tempo = 60/periodicity/self.timestep_real
 					print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
 
 					if self.plot:
-						self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history), self.next_timestep))
+						self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
 					self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(phase, False, periodicity, amplitude, amplitude)])]
 
 					self.need_tempo = False
@@ -304,16 +302,16 @@ class BeatDetector:
 			if all([tr.search_interval()[1] > window_end for tr in self.trackers]):
 				if self.verbose: print("============================")
 				window_start, window_end = get_search_interval(self.trackers)
-				window_start = max(window_start, self.next_timestep - len(self.snrsum_history) + smoothing_context_timesteps)
+				window_start = max(window_start, self.next_timestep - len(self.snrsum_history.get()) + smoothing_context_timesteps)
 				window_end = max(window_end, 0)
 				if window_end + smoothing_context_timesteps >= self.next_timestep:
 					if self.verbose: print("not enough audio, exiting")
 					break
 
 				if self.verbose: print(f"window = {window_start}..{window_end}, len = {window_end-window_start}")
-				window = self.snrsum_history[
-					window_start-(self.next_timestep-len(self.snrsum_history)) - smoothing_context_timesteps :
-					window_end  -(self.next_timestep-len(self.snrsum_history)) + smoothing_context_timesteps
+				window = self.snrsum_history.get()[
+					window_start-(self.next_timestep-len(self.snrsum_history.get())) - smoothing_context_timesteps :
+					window_end  -(self.next_timestep-len(self.snrsum_history.get())) + smoothing_context_timesteps
 				]
 				window = sn.gaussian_filter1d(window, smoothing_sigma_timesteps)
 				window = window[smoothing_context_timesteps : -smoothing_context_timesteps]

@@ -523,37 +523,55 @@ if args.file == 'jack':
 
 	total_samples = 0
 	last_greedy_beat = 0
-	audio_backlog = np.zeros(4096*2)
-	audio_backlog_pos = 0
 
 	upcoming_beats = []
 	current_beats = []
 
+	ringbuf_in = jack.RingBuffer(32000*4)
+	ringbuf_out = jack.RingBuffer(32000*4)
+
+	lockout = False
+
 	@client.set_process_callback
 	def process(frames):
-		global total_samples
-		global last_greedy_beat
-		global audio_backlog_pos
-		global audio_backlog
-		global upcoming_beats
-		global current_beats
+		global ringbuf_in
+		global ringbuf_out
+		global lockout
 
 		if frames == 0: return
+		
+		n = ringbuf_in.write(client.inports[0].get_buffer())
+		assert n == frames * 4
 
-		data = client.inports[0].get_array()
-		assert len(data) == frames
-		now = total_samples / samplerate
-		now_frames = total_samples
-		total_samples += frames
-		#assert all([b <= now for b in current_beats])
+		outdata = ringbuf_out.read(frames*4)
+		assert len(outdata) == frames*4
+		client.outports[0].get_buffer()[:] = outdata
 
-		#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")
 
-		audio_backlog[audio_backlog_pos : audio_backlog_pos+frames] = data
-		audio_backlog_pos += frames
 
-		if audio_backlog_pos + frames > len(audio_backlog):
-			bd.process(audio_backlog[0:audio_backlog_pos])
+	samplerate = client.samplerate
+	bd = BeatDetector(samplerate, force_bpm = args.bpm, timestep_desired_ms = args.timestep)
+
+	with client:
+		ringbuf_out.write([0]*8192*4*2)
+		while True:
+			while ringbuf_in.read_space < 8192*4:
+				pass
+
+			data = ringbuf_in.read(8192*4)
+			assert len(data) == 8192*4
+			data = np.frombuffer(data, dtype=np.float32)
+
+			frames = len(data)
+			
+			now = total_samples / samplerate
+			now_frames = total_samples + 8192*2
+			total_samples += frames
+			#assert all([b <= now for b in current_beats])
+
+			#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")
+
+			bd.process(data)
 			# FIXME this drops beats if there are more than one beat in the time frame.
 			if len(bd.greedy_beats) > 0:
 				if bd.greedy_beats[-1][0] != last_greedy_beat:
@@ -564,32 +582,30 @@ if args.file == 'jack':
 					upcoming_beats = [(bd.greedy_beats[-1][0] + i * bd.greedy_beats[-1][2]) * bd.timestep_real * samplerate for i in range(20)]
 					upcoming_beats = [b for b in upcoming_beats if b >= now_frames and all([b >= cb + 0.7*bd.greedy_beats[-1][2] for cb in current_beats])]
 					#print(current_beats, upcoming_beats)
-			audio_backlog_pos = 0
 
-		CLICK_FRAMES=int(0.04 * 48000)
-		current_beats = [b for b in current_beats if b >= now_frames - CLICK_FRAMES]
-		current_beats += [b for b in upcoming_beats if b <= now_frames+frames]
-		upcoming_beats = [b for b in upcoming_beats if b >  now_frames+frames]
-		#print (now_frames, current_beats, upcoming_beats)
-		
-		clicks = client.outports[0].get_array()
-		SINE_PERIOD_FRAMES = int(48000//880)
-		total_samples=int(total_samples)
-		clicks[:] = (np.sin(np.arange(total_samples%SINE_PERIOD_FRAMES, total_samples % SINE_PERIOD_FRAMES +frames) /SINE_PERIOD_FRAMES*2*3.141592654))
+			CLICK_FRAMES=int(0.06 * 48000)
+			current_beats = [b for b in current_beats if b >= now_frames - CLICK_FRAMES]
+			current_beats += [b for b in upcoming_beats if b <= now_frames+frames]
+			upcoming_beats = [b for b in upcoming_beats if b >  now_frames+frames]
+			#print (now_frames, current_beats, upcoming_beats)
+			
+			SINE_PERIOD_FRAMES = int(48000//880)
+			total_samples=int(total_samples)
+			clicks = np.zeros(frames, dtype=np.float32)
+			clicks[:] = (np.sin(np.arange(total_samples%SINE_PERIOD_FRAMES, total_samples % SINE_PERIOD_FRAMES +frames) /SINE_PERIOD_FRAMES*2*3.141592654))
 
-		click_mask = np.zeros(frames)
-		for b in current_beats:
-			b=int(b)
-			click_mask[b-now_frames : b-now_frames+CLICK_FRAMES] += 0.5
+			click_mask = np.zeros(frames)
+			for b in current_beats:
+				b=int(b)
+				click_mask[max(0,b-now_frames) : b-now_frames+CLICK_FRAMES] += 1
 
-		clicks[:] *= click_mask
+			clicks[:] *= click_mask
+			
+			bs = clicks.tobytes()
+			n = ringbuf_out.write(bs)
+			assert n==len(bs)
 
 
-	samplerate = client.samplerate
-	bd = BeatDetector(samplerate, force_bpm = args.bpm, timestep_desired_ms = args.timestep)
-
-	with client:
-		input()
 
 	exit(0)
 

@@ -10,6 +10,8 @@ import argparse
 from types import SimpleNamespace
 import jack
 
+from timetracker import TimeTracker
+
 p = argparse.ArgumentParser()
 p.add_argument('file')
 p.add_argument('start')
@@ -37,6 +39,8 @@ def get_search_interval(trackers):
 	return (int(lo), int(hi))
 
 serial_number = 1
+
+tt = TimeTracker()
 
 class BeatTracker:
 	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
@@ -187,6 +191,7 @@ class BeatDetector:
 		axs[2].sharey(axs[0])
 
 	def process(self, audio):
+		tt.begin('concat audio history')
 		first_sample = self.next_sample
 		self.next_sample += len(audio)
 		if self.verbose: print(f"consuming {len(audio)} samples, starting at {first_sample}")
@@ -195,14 +200,18 @@ class BeatDetector:
 		# audio[-1] is at t = self.next_sample samples
 		# so is data[-1]
 
+		tt.begin("overlapping windows")
 		x = overlapping_windows(data, self.fft_window, self.samplestep)
 		self.next_timestep += x.shape[0]
+		tt.begin('slice audio history')
 		self.audio_history = data[self.samplestep * x.shape[0] : ]
 		if self.verbose: print(f"got {x.shape[0]} new timesteps; audio history len = {len(self.audio_history)}")
 
+		tt.begin('fft')
 		y = np.absolute( np.fft.rfft(x, n = self.fft_size, axis=1) )
 		y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) / 10 # sum bass together
 
+		tt.begin('binning') # FIXME scales poorly
 		if self.verbose: print("binning")
 		y = log_sum2(y, self.logbins)
 
@@ -212,9 +221,11 @@ class BeatDetector:
 
 		# x[-1] and y[-1] is at t = self.next_timestep timesteps
 
+		tt.begin('concat fft history')
 		self.fft_history = np.concatenate([self.fft_history[-(len(self.cfar_kernel)-1):, :], y], axis=0)
 		if self.verbose: print(f"fft history len = {self.fft_history.shape[0]} timesteps")
-		
+	
+		tt.begin('cfar') # FIXME scales not so well
 		if self.verbose: print("convolving")
 		if self.fft_history.shape[0] >= self.cfar_kernel.shape[0]:
 			y = np.apply_along_axis( lambda foo: np.convolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
@@ -224,6 +235,7 @@ class BeatDetector:
 
 		assert y.shape[0] == waterfall.shape[0]
 
+		tt.begin('aftermath')
 		if self.verbose: print("maximum")
 		y = np.fmax(y - 0, 0)
 
@@ -235,6 +247,7 @@ class BeatDetector:
 
 		z = np.sum( y[:, 0:], axis=1)
 
+		tt.begin('snr(sum) history') # FIXME scales poorly
 		self.snr_history = np.concatenate([self.snr_history, y], axis=0)[-self.snr_history_maxlen:,:]
 		assert self.snr_history.shape[0] <= self.snr_history_maxlen
 		self.snrsum_history = np.concatenate([self.snrsum_history, z])[-self.snr_history_maxlen:]
@@ -248,7 +261,7 @@ class BeatDetector:
 			self.plots.snr[self.next_timestep-self.snr_history.shape[0] : self.next_timestep, :] = self.snr_history
 			self.plots.snrsum[self.next_timestep-self.snrsum_history.shape[0] : self.next_timestep] = self.snrsum_history
 			
-
+		tt.begin('peak stats') # FIXME scales not so well
 		if self.verbose: print("Running statistics on the peaks")
 		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history, self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
 		prominences = sorted(result[1]['prominences'])[::-1]
@@ -259,6 +272,7 @@ class BeatDetector:
 			if self.verbose: print("lambda = %.6f" % lam)
 
 			if self.need_tempo:
+				tt.begin('tempo estimation')
 				result, missing = self.estimate_tempo_and_phase(self.snr_history, self.snrsum_history, self.force_bpm)
 				if missing > 0:
 					print(f"Tempo estimation pending, need {missing} more samples")
@@ -279,6 +293,8 @@ class BeatDetector:
 				self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
 		else:
 			if self.verbose: print("ehhh too few prominences")
+
+		tt.begin('beat tracking')
 
 		window_start, window_end = 0, 0
 
@@ -391,6 +407,8 @@ class BeatDetector:
 				scatter_ys_old = scatter_ys
 				if args.step_by_step:
 					plt.ginput()
+
+		tt.begin('done')
 
 
 	def estimate_tempo_and_phase(self, snr_history, snrsum_history, force_bpm=None):
@@ -714,6 +732,8 @@ if args.plot:
 		bpms.append(bpm)
 
 	ax.plot(ts, bpms)
+
+tt.print_stats()
 
 print("writing out.mp3")
 

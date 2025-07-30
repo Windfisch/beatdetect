@@ -228,10 +228,20 @@ class BeatDetector:
 		self.fft_history = np.concatenate([self.fft_history[-(len(self.cfar_kernel)-1):, :], y], axis=0)
 		if self.verbose: print(f"fft history len = {self.fft_history.shape[0]} timesteps")
 	
-		tt.begin('cfar') # FIXME scales not so well
+		tt.begin('cfar') # FIXME this scales not so well
 		if self.verbose: print("convolving")
 		if self.fft_history.shape[0] >= self.cfar_kernel.shape[0]:
-			y = np.apply_along_axis( lambda foo: np.convolve(foo, self.cfar_kernel, 'valid'), axis=0, arr=self.fft_history )
+			# both options do exacty the same, but their performance scales differently
+			# with number_of_iterations and batchsize.
+			# a takeover between 15 and 20 looks legit on my machine and limits worst-case
+			# time to approx. 350%, which is still only 60% of fft runtime.
+			if self.fft_history.shape[0]-self.cfar_kernel.shape[0] >= 15:
+				y = np.array([
+					np.convolve(col, self.cfar_kernel, mode='valid')
+					for col in self.fft_history.T
+				]).T
+			else:
+				y = ss.convolve2d(self.fft_history, self.cfar_kernel[:, np.newaxis], 'valid')
 		else:
 			if self.verbose: print("not enough fft history to perform a cfar, returning")
 			return

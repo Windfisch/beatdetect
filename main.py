@@ -122,7 +122,9 @@ class BeatDetector:
 		self.fft_window_size = int(fft_window_ms / 1000 * samplerate)
 		self.fft_window = np.hamming(self.fft_window_size)
 		self.fft_size = 2 * self.fft_window_size
-		self.logbins = math.log(self.fft_size, 2)*12
+		fft_output_size = int(self.fft_size/2) + 1
+		self.logbins = math.log(self.fft_size, 2)*12 # TODO does not need to be a member # FIXME FIXME FIXME this should use fft_output_size, not fft_size!
+		self.log_binning = LogBinning(self.logbins, fft_output_size)
 		
 		self.cfar_kernel = cfar_kernel( int(cfar_avg_ms / 1000 / self.timestep_real), int(cfar_dead_ms / 1000 / self.timestep_real) )
 		print("kernel len = ", len(self.cfar_kernel))
@@ -213,7 +215,7 @@ class BeatDetector:
 
 		tt.begin('binning') # FIXME scales poorly
 		if self.verbose: print("binning")
-		y = log_sum2(y, self.logbins)
+		y = self.log_binning.log_sum2(y)
 
 		y = np.log10(y + 1e-4) * 20
 
@@ -511,19 +513,23 @@ def log_avg2(a, bins):
 	
 	return result
 
-def log_sum2(a, bins):
-	l = log(a.shape[1]) / bins
-	bins = int(bins)
-	result=np.zeros((a.shape[0], bins))
+class LogBinning:
+	def __init__(self, bins, fftsize):
+		self.borders = np.logspace(0, np.log10(fftsize)*int(bins)/bins, int(bins)+1).astype(int)
+		self.borders_end = np.maximum(self.borders[1:], self.borders[:-1]+1)
+		self.result = np.zeros((1, int(bins)))
+		self.bins = int(bins)
 
-	for i in range(bins):
-		begin = int(exp(i*l))
-		end = int(exp((i+1)*l))
-		if end <= begin: end=begin+1
+	def log_sum2(self, a):
+		if self.result.shape[0] < a.shape[0]:
+			self.result = np.zeros((max(self.result.shape[0]*2, a.shape[0]), int(self.bins)))
 
-		result[:, i] = np.sum( a[:, begin:end], axis=1) / (end-begin)
-	
-	return result
+		for i in range(int(self.bins)):
+			begin = self.borders[i]
+			end = self.borders_end[i]
+			self.result[0:a.shape[0], i] = np.mean( a[:, begin:end], axis=1)
+		
+		return self.result[0:a.shape[0], :]
 
 def overlapping_windows(data, window, step):
 	if len(data) < len(window):

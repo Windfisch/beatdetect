@@ -562,26 +562,40 @@ if args.file == 'jack':
 
 	upcoming_beats = []
 	current_beats = []
+	
+	CHUNKSIZE = 1*1024 # 8192
 
-	ringbuf_in = jack.RingBuffer(32000*4)
-	ringbuf_out = jack.RingBuffer(32000*4)
+
+	ringbuf_in = jack.RingBuffer(max(64000, 4*CHUNKSIZE)*4)
+	ringbuf_out = jack.RingBuffer(max(64000, 4*CHUNKSIZE)*4)
+	ringbuf_out.write([0]*CHUNKSIZE*4)
 
 	lockout = False
 
+	missing_outdata = 0
+
 	@client.set_process_callback
 	def process(frames):
+		assert frames <= CHUNKSIZE
 		global ringbuf_in
 		global ringbuf_out
 		global lockout
+		global missing_outdata
 
 		if frames == 0: return
 		
 		n = ringbuf_in.write(client.inports[0].get_buffer())
 		assert n == frames * 4
 
+		if missing_outdata > 0:
+			missing_outdata -= len(ringbuf_out.read(missing_outdata))
+			print(f"missing: {missing_outdata}")
 		outdata = ringbuf_out.read(frames*4)
-		assert len(outdata) == frames*4
-		client.outports[0].get_buffer()[:] = outdata
+		if len(outdata) < frames*4:
+			missing_outdata += frames*4 - len(outdata)
+		#assert len(outdata) == frames*4
+		else:
+			client.outports[0].get_buffer()[:] = outdata
 
 
 
@@ -589,19 +603,18 @@ if args.file == 'jack':
 	bd = BeatDetector(samplerate, force_bpm = args.bpm, timestep_desired_ms = args.timestep)
 
 	with client:
-		ringbuf_out.write([0]*8192*4*2)
 		while True:
-			while ringbuf_in.read_space < 8192*4:
+			while ringbuf_in.read_space < CHUNKSIZE*4:
 				pass
 
-			data = ringbuf_in.read(8192*4)
-			assert len(data) == 8192*4
+			data = ringbuf_in.read(CHUNKSIZE*4)
+			assert len(data) == CHUNKSIZE*4
 			data = np.frombuffer(data, dtype=np.float32)
 
 			frames = len(data)
 			
 			now = total_samples / samplerate
-			now_frames = total_samples + 8192*2
+			now_frames = total_samples + CHUNKSIZE
 			total_samples += frames
 			#assert all([b <= now for b in current_beats])
 

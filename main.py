@@ -141,6 +141,7 @@ class BeatDetector:
 		self.smoothing_sigma_ms = 10
 
 		self.next_sample = 0
+		self.next_peakstat_sample = 0
 		self.next_timestep = 0
 		self.need_tempo = True
 
@@ -271,39 +272,43 @@ class BeatDetector:
 		if self.plot:
 			self.plots.snr[self.next_timestep-self.snr_history.get().shape[0] : self.next_timestep, :] = self.snr_history.get()
 			self.plots.snrsum[self.next_timestep-self.snrsum_history.get().shape[0] : self.next_timestep] = self.snrsum_history.get()
-			
-		tt.begin('peak stats') # FIXME scales not so well
-		if self.verbose: print("Running statistics on the peaks")
-		result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
-		prominences = sorted(result[1]['prominences'])[::-1]
-		if len(prominences) > 0:
-			lam = 1/np.mean(prominences)
-			if self.plot:
-				self.plots.lambdas.append((self.next_timestep-1, lam))
-			if self.verbose: print("lambda = %.6f" % lam)
+		
+		if self.next_sample >= self.next_peakstat_sample:
+			# peak stats and tempo estimation are only done every second or so (more rarely if larger chunks of audio are fed into the algorithm!)
+			self.next_peakstat_sample = self.next_sample + self.samplerate / 2
 
-			if self.need_tempo:
-				tt.begin('tempo estimation')
-				result, missing = self.estimate_tempo_and_phase(self.snr_history.get(), self.snrsum_history.get(), self.force_bpm)
-				if missing > 0:
-					print(f"Tempo estimation pending, need {missing} more samples")
-				else:
-					periodicity, phase, amplitude = result
-					phase += (self.next_timestep - len(self.snrsum_history.get()))
-					tempo = 60/periodicity/self.timestep_real
-					print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
+			tt.begin('peak stats') # FIXME scales not so well
+			if self.verbose: print("Running statistics on the peaks")
+			result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
+			prominences = sorted(result[1]['prominences'])[::-1]
+			if len(prominences) > 0:
+				lam = 1/np.mean(prominences)
+				if self.plot:
+					self.plots.lambdas.append((self.next_timestep-1, lam))
+				if self.verbose: print("lambda = %.6f" % lam)
 
-					if self.plot:
-						self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
-					self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(phase, False, periodicity, amplitude, amplitude)])]
+				if self.need_tempo:
+					tt.begin('tempo estimation')
+					result, missing = self.estimate_tempo_and_phase(self.snr_history.get(), self.snrsum_history.get(), self.force_bpm)
+					if missing > 0:
+						print(f"Tempo estimation pending, need {missing} more samples")
+					else:
+						periodicity, phase, amplitude = result
+						phase += (self.next_timestep - len(self.snrsum_history.get()))
+						tempo = 60/periodicity/self.timestep_real
+						print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
 
-					self.need_tempo = False
+						if self.plot:
+							self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
+						self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(phase, False, periodicity, amplitude, amplitude)])]
 
-			if self.plot:
-				self.peakstatax.plot(prominences, np.arange(len(prominences))/len(prominences))
-				self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
-		else:
-			if self.verbose: print("ehhh too few prominences")
+						self.need_tempo = False
+
+				if self.plot:
+					self.peakstatax.plot(prominences, np.arange(len(prominences))/len(prominences))
+					self.peakstatax.plot(np.arange(max(prominences)), np.exp(-lam * np.arange(max(prominences)) ))
+			else:
+				if self.verbose: print("ehhh too few prominences")
 
 		tt.begin('beat tracking')
 

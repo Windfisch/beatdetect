@@ -4,6 +4,7 @@ import sys
 import numpy as np
 import scipy.signal as ss
 import scipy.ndimage as sn
+import scipy.sparse as sparse
 from numpy import log, exp
 import time
 import argparse
@@ -213,7 +214,7 @@ class BeatDetector:
 		y = np.absolute( np.fft.rfft(x, n = self.fft_size, axis=1) )
 		y[:, 0:10] = np.sum( y[:, 0:10], axis=1 ).reshape(-1,1) / 10 # sum bass together
 
-		tt.begin('binning') # FIXME scales poorly
+		tt.begin('binning')
 		if self.verbose: print("binning")
 		y = self.log_binning.log_sum2(y)
 
@@ -517,19 +518,17 @@ class LogBinning:
 	def __init__(self, bins, fftsize):
 		self.borders = np.logspace(0, np.log10(fftsize)*int(bins)/bins, int(bins)+1).astype(int)
 		self.borders_end = np.maximum(self.borders[1:], self.borders[:-1]+1)
-		self.result = np.zeros((1, int(bins)))
-		self.bins = int(bins)
+		self.matrix = np.zeros((fftsize, int(bins)))
 
-	def log_sum2(self, a):
-		if self.result.shape[0] < a.shape[0]:
-			self.result = np.zeros((max(self.result.shape[0]*2, a.shape[0]), int(self.bins)))
-
-		for i in range(int(self.bins)):
+		for i in range(int(bins)):
 			begin = self.borders[i]
 			end = self.borders_end[i]
-			self.result[0:a.shape[0], i] = np.mean( a[:, begin:end], axis=1)
-		
-		return self.result[0:a.shape[0], :]
+			for j in range(begin, end):
+				self.matrix[j, i] = 1/(end-begin)
+		self.matrix = sparse.csr_array(self.matrix) # doesn't really matter if csr or csc
+
+	def log_sum2(self, a):
+		return a @ self.matrix
 
 def overlapping_windows(data, window, step):
 	if len(data) < len(window):

@@ -1,4 +1,5 @@
 import soundfile as sf
+import threading
 import math
 import sys
 import numpy as np
@@ -557,6 +558,8 @@ if args.file == 'jack':
 	audio_in = client.inports.register('audio_in')
 	click_out = client.outports.register('click_out')
 
+	semaphore = threading.Semaphore(0)
+
 	total_samples = 0
 	last_greedy_beat = 0
 
@@ -581,11 +584,13 @@ if args.file == 'jack':
 		global ringbuf_out
 		global lockout
 		global missing_outdata
+		global semaphore
 
 		if frames == 0: return
 		
 		n = ringbuf_in.write(client.inports[0].get_buffer())
 		assert n == frames * 4
+		semaphore.release(1)
 
 		if missing_outdata > 0:
 			missing_outdata -= len(ringbuf_out.read(missing_outdata))
@@ -604,8 +609,8 @@ if args.file == 'jack':
 
 	with client:
 		while True:
-			while ringbuf_in.read_space < CHUNKSIZE*4:
-				pass
+			semaphore.acquire(1)
+			assert ringbuf_in.read_space >= CHUNKSIZE*4
 
 			data = ringbuf_in.read(CHUNKSIZE*4)
 			assert len(data) == CHUNKSIZE*4

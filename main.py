@@ -97,7 +97,7 @@ class BeatTracker:
 		alpha = 0
 		confidence = self.confidence * (1-alpha) + 1 * alpha
 
-		tpb_alpha = 0.7
+		tpb_alpha = 0.7 # 0.98
 		prom_alpha = 0.5
 		result = []
 		for rel, loc, found, prom in peaks:
@@ -260,7 +260,7 @@ class BeatDetector:
 
 		if self.verbose: print("done")
 
-		z = np.sum( y[:, 0:], axis=1)
+		z = np.sum( y, axis=1)
 
 		tt.begin('snr(sum) history')
 		self.snr_history.append(y)
@@ -646,7 +646,7 @@ if args.file == 'jack':
 			SINE_PERIOD_FRAMES = int(48000//880)
 			total_samples=int(total_samples)
 			clicks = np.zeros(frames, dtype=np.float32)
-			clicks[:] = (np.sin(np.arange(total_samples%SINE_PERIOD_FRAMES, total_samples % SINE_PERIOD_FRAMES +frames) /SINE_PERIOD_FRAMES*2*3.141592654))
+			clicks[:] = (np.sin(np.arange(total_samples%SINE_PERIOD_FRAMES, total_samples % SINE_PERIOD_FRAMES +frames) /SINE_PERIOD_FRAMES*2*3.141592654)) *0.5
 
 			click_mask = np.zeros(frames)
 			for b in current_beats:
@@ -686,7 +686,7 @@ print(data_orig.shape)
 
 
 
-data = data_orig[:,0]
+data = data_orig[:,0] + data_orig[:,1]
 print(data.shape)
 
 

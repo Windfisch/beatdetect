@@ -290,7 +290,18 @@ class BeatDetector:
 
 				if self.need_tempo:
 					tt.begin('tempo estimation')
-					result, missing = self.estimate_tempo_and_phase(self.snr_history.get(), self.snrsum_history.get(), self.force_bpm)
+
+					crop_amount = 0
+
+					history_first = self.next_timestep - self.snr_history.get().shape[0]
+					HISTORY_DROP = self.cfar_kernel.shape[0] + 1
+
+					drop = max(0, HISTORY_DROP - history_first)
+
+					if drop > 0:
+						print(f"dropping {drop} frames from history because of warmup")
+
+					result, missing = self.estimate_tempo_and_phase(self.snr_history.get()[drop:,:], self.force_bpm, self.next_timestep - len(self.snrsum_history.get()))
 					if missing > 0:
 						print(f"Tempo estimation pending, need {missing} more samples")
 					else:
@@ -428,18 +439,23 @@ class BeatDetector:
 		tt.begin('done')
 
 
-	def estimate_tempo_and_phase(self, snr_history, snrsum_history, force_bpm=None):
+	def estimate_tempo_and_phase(self, snr_history, force_bpm=None, plot_time_offset = 0):
 		min_bpm = 60
 		max_bpm = 300
-		y = snr_history # FIXME naming
-		z = snrsum_history # FIXME naming
-
 		correlation_window = int(5/self.timestep_real)
 		rows_needed = correlation_window + int((60/min_bpm)/self.timestep_real)
 		if snr_history.shape[0] < rows_needed:
 			return None, rows_needed - snr_history.shape[0]
 
 		print("Got enough data to compute a tempo estimate!")
+
+		y = snr_history # FIXME naming
+		print(y.shape)
+		equalizer = 1 - 0*(((np.arange(y.shape[1]) / y.shape[1]) - 0.5) * 2)
+		equalizer = equalizer[None, :]
+		print(equalizer)
+		z = sn.gaussian_filter1d(np.sum( y * equalizer , axis=1), self.smoothing_sigma_ms/1000/self.timestep_real) # FIXME naming
+
 		#corr_data = y[ -int((60/min_bpm) / timestep_real)-correlation_window:, :]
 		#corr_reference = corr_data[-correlation_window:, :]
 		#correlation = np.apply_along_axis( lambda foo: np.flip(ss.correlate(
@@ -489,7 +505,7 @@ class BeatDetector:
 				phase_window = int((5 / self.timestep_real) / periodicity_)*periodicity_
 				n = phase_window / periodicity_
 				phases = z[:phase_window].reshape(-1, periodicity_).sum(axis=0) / n
-				axs[5].plot(np.arange(len(phases))*self.timestep_real, phases, lw=1)
+				axs[5].plot((np.arange(len(phases))+plot_time_offset)*self.timestep_real, phases, lw=1)
 
 		phase_window = int((5 / self.timestep_real) / periodicity)*periodicity
 		n = phase_window / periodicity

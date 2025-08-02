@@ -221,6 +221,25 @@ class BeatDetector:
 				tracker.time_per_beat = new_tpb
 			tracker.beat_loc = timestep
 			self.trackers = [tracker]
+	
+	def update_greedy(self):
+			PUNISH_DISCONTINOUS = 0.5
+
+			if len(self.greedy_beats) > 0:
+				last, tpb = self.greedy_beats[-1][0], self.greedy_beats[-1][6]
+				for tr in self.trackers:
+					rel_distance = ((tr.beats[-1][0] - last) / tpb + 0.5) % 1 - 0.5
+					tr.greedy_continuity = PUNISH_DISCONTINOUS * np.exp(- (rel_distance / 0.1) ** 2) + 1-PUNISH_DISCONTINOUS
+			else:
+				for tr in self.trackers:
+					tr.greedy_continuity = 1
+
+			best = max(self.trackers, key = lambda tr : tr.confidence * tr.greedy_continuity)
+			if best.used == False:
+				self.greedy_beats.append(best.beats[-1] + (best.confidence, best.tpb()))
+			
+			for tr in self.trackers:
+				tr.used = True
 
 	def process(self, audio):
 		tt.begin('concat audio history')
@@ -427,17 +446,14 @@ class BeatDetector:
 			self.trackers.sort(key = lambda t : -t.confidence)
 
 			self.trackers = self.trackers[0:10]
-			
+
 			sum_conf = sum([t.confidence for t in self.trackers])
 			for t in self.trackers: t.confidence /= sum_conf
 
 
 			if self.verbose: print("confidences: ", ", ".join(["%5f" % t.confidence for t in self.trackers]))
 
-			if self.trackers[0].used == False:
-				self.greedy_beats.append(self.trackers[0].beats[-1] + (self.trackers[0].confidence, self.trackers[0].tpb()))
-			for tr in self.trackers:
-				tr.used = True
+			self.update_greedy()
 
 			if self.plot and args.step_by_step:
 				trackerax.clear()
@@ -805,7 +821,7 @@ if args.file == 'jack':
 				if b >= now_frames:
 					window.flash(b + our_frametime_to_jack)
 
-			window.set_texts(['%4.1f%%' % (t.confidence*100) for t in bd.trackers[0:4]])
+			window.set_texts(['%4.1f%% ( * %3.0f%%)' % (t.confidence*100, t.greedy_continuity*100) for t in bd.trackers[0:4]])
 			bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))
 			window.set_bpm(bpm)
 

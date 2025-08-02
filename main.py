@@ -206,6 +206,17 @@ class BeatDetector:
 		axs[2].plot(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history.get()))*self.timestep_real, color='blue')
 		axs[2].sharey(axs[0])
 
+	def resync(self, timestep):
+		if len(self.trackers) > 0:
+			tracker = self.trackers[0]
+			beat = tracker.beats[-1]
+
+			print(f"shifting next beat from {beat[0]} to {timestep} while retaining tpb={tracker.time_per_beat}={beat[2]}")
+			newbeat = (timestep, False, beat[2], beat[3], beat[4])
+			tracker.beats.append(newbeat)
+			tracker.beat_loc = timestep
+			self.trackers = [tracker]
+
 	def process(self, audio):
 		tt.begin('concat audio history')
 		first_sample = self.next_sample
@@ -644,7 +655,12 @@ if args.file == 'jack':
 			wx.Frame.__init__(self, None, wx.ID_ANY, "beatdetect")
 			self.tap_btn = wx.Button(self, label="tap")
 			self.tap_btn.SetOwnBackgroundColour(wx.BLUE)
+			self.tap_btn.Bind(wx.EVT_BUTTON,self.on_tap)
 			self.jackclient = jackclient
+			self.taps = queue.Queue(maxsize=100)
+
+		def on_tap(self, foo):
+			self.taps.put(self.jackclient.frame_time)
 
 		def flash(self, when):
 			delay_frames = when - self.jackclient.frame_time
@@ -683,6 +699,17 @@ if args.file == 'jack':
 			now_frames = total_samples + CHUNKSIZE
 			total_samples += frames
 			#assert all([b <= now for b in current_beats])
+
+			tap_ourframes = None
+			try:
+				while True:
+					tap_ourframes = window.taps.get_nowait() - our_frametime_to_jack
+			except queue.Empty:
+				pass
+
+			if tap_ourframes is not None:
+				bd.resync(bd.timestep_from_sample(tap_ourframes))
+				print("sync!")
 
 			#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")
 

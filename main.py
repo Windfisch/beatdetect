@@ -12,6 +12,9 @@ import argparse
 from types import SimpleNamespace
 import jack
 
+import wx
+import queue
+
 from numpy_ringbuf import Ringbuf2D, Ringbuf1D
 from timetracker import TimeTracker
 
@@ -587,6 +590,7 @@ if args.file == 'jack':
 
 	ringbuf_in = jack.RingBuffer(max(64000, 4*CHUNKSIZE)*4)
 	ringbuf_out = jack.RingBuffer(max(64000, 4*CHUNKSIZE)*4)
+	ringbuf_time = jack.RingBuffer(256)
 	ringbuf_out.write([0]*CHUNKSIZE*4)
 
 	lockout = False
@@ -606,6 +610,8 @@ if args.file == 'jack':
 		
 		n = ringbuf_in.write(client.inports[0].get_buffer())
 		assert n == frames * 4
+		n = ringbuf_time.write(int.to_bytes(client.last_frame_time, 8, 'little'))
+		assert n == 8
 		semaphore.release(1)
 
 		if missing_outdata > 0:
@@ -623,17 +629,47 @@ if args.file == 'jack':
 	samplerate = client.samplerate
 	bd = BeatDetector(samplerate, force_bpm = args.bpm, timestep_desired_ms = args.timestep)
 
+	beats_to_gui = queue.Queue(maxsize=10)
+
+	class MyFrame(wx.Frame):
+		def __init__(self, jackclient):
+			wx.Frame.__init__(self, None, wx.ID_ANY, "beatdetect")
+			self.tap_btn = wx.Button(self, label="tap")
+			self.tap_btn.SetOwnBackgroundColour(wx.BLUE)
+			self.jackclient = jackclient
+
+		def flash(self, when):
+			delay_frames = when - self.jackclient.frame_time
+			delay_millis = int(delay_frames / self.jackclient.samplerate * 1000)
+			wx.CallLater(delay_millis, lambda : self.tap_btn.SetOwnBackgroundColour(wx.RED))
+			wx.CallLater(delay_millis+60, lambda : self.tap_btn.SetOwnBackgroundColour(wx.BLUE))
+
+	app = wx.App(False)
+	window = MyFrame(client)
+	window.Show(True)
+	threading.Thread(target = lambda : app.MainLoop()).start()
+
 	with client:
+		print("hi")
+		our_frametime = 0
 		while True:
 			while ringbuf_in.read_space < CHUNKSIZE*4:
 				semaphore.acquire(1)
 			assert ringbuf_in.read_space >= CHUNKSIZE*4
+			assert ringbuf_time.read_space >= 8
 
 			data = ringbuf_in.read(CHUNKSIZE*4)
 			assert len(data) == CHUNKSIZE*4
 			data = np.frombuffer(data, dtype=np.float32)
+			jack_frametime = ringbuf_time.read(8)
+			assert len(jack_frametime) == 8
+			jack_frametime = int.from_bytes(jack_frametime, 'little')
+			# our audio buffer starts at frametime
 
 			frames = len(data)
+
+			our_frametime_to_jack = jack_frametime - our_frametime
+			our_frametime += frames # TODO move upwards?
 			
 			now = total_samples / samplerate
 			now_frames = total_samples + CHUNKSIZE
@@ -676,6 +712,9 @@ if args.file == 'jack':
 			n = ringbuf_out.write(bs)
 			assert n==len(bs)
 
+			for b in current_beats:
+				if b >= now_frames:
+					window.flash(b + our_frametime_to_jack)
 
 
 	exit(0)

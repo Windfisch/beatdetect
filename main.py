@@ -68,6 +68,14 @@ class BeatTracker:
 			#print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
 			pass
 
+	def tpb(self):
+		if len(self.beats) > 2:
+			first = max(0, len(self.beats) - 1 - 8)
+			last = len(self.beats)-1
+			return (self.beats[last][0] - self.beats[first][0]) / (last-first)
+		else:
+			return self.time_per_beat
+
 	def search_interval(self):
 		expected_loc = self.beat_loc + self.time_per_beat
 		win_timesteps = self.sigma * 4
@@ -411,7 +419,7 @@ class BeatDetector:
 			if self.verbose: print("confidences: ", ", ".join(["%5f" % t.confidence for t in self.trackers]))
 
 			if self.trackers[0].used == False:
-				self.greedy_beats.append(self.trackers[0].beats[-1] + (self.trackers[0].confidence,))
+				self.greedy_beats.append(self.trackers[0].beats[-1] + (self.trackers[0].confidence, self.trackers[0].tpb()))
 			for tr in self.trackers:
 				tr.used = True
 
@@ -686,7 +694,7 @@ if args.file == 'jack':
 					beat_s = bd.greedy_beats[-1][0] * bd.timestep_real
 					#print(f"beat at {bd.greedy_beats[-1][0]:7.1f}, {beat_s:5.1f}s, now = {now:5.1f}s, lag = {now-beat_s:6.3}s, frames = {frames}, audio_backlog_pos = {audio_backlog_pos}")
 
-					upcoming_beats = [(bd.greedy_beats[-1][0] + i * bd.greedy_beats[-1][2]) * bd.timestep_real * samplerate for i in range(20)]
+					upcoming_beats = [(bd.greedy_beats[-1][0] + i * bd.greedy_beats[-1][6]) * bd.timestep_real * samplerate for i in range(20)]
 					upcoming_beats = [b for b in upcoming_beats if b >= now_frames and all([b >= cb + 0.7*bd.greedy_beats[-1][2] for cb in current_beats])]
 					#print(current_beats, upcoming_beats)
 

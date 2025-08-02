@@ -185,6 +185,9 @@ class BeatDetector:
 	def timestep_from_sample(self, s):
 		return (s - self.fft_window_size/2) / self.samplestep
 	
+	def deltatimestep_from_deltasample(self, s):
+		return s / self.samplestep
+	
 	def seconds_from_timestep(self, ts):
 		return self.sample_from_timestep(ts) / self.samplerate
 
@@ -206,14 +209,16 @@ class BeatDetector:
 		axs[2].plot(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history.get()))*self.timestep_real, color='blue')
 		axs[2].sharey(axs[0])
 
-	def resync(self, timestep):
+	def resync(self, timestep, new_tpb = None):
 		if len(self.trackers) > 0:
 			tracker = self.trackers[0]
 			beat = tracker.beats[-1]
 
-			print(f"shifting next beat from {beat[0]} to {timestep} while retaining tpb={tracker.time_per_beat}={beat[2]}")
-			newbeat = (timestep, False, beat[2], beat[3], beat[4])
+			print(f"shifting next beat from {beat[0]} to {timestep} while {'retaining' if new_tpb is None else 'updating'} tpb={new_tpb}; formerly {tracker.time_per_beat}={beat[2]}")
+			newbeat = (timestep, False, new_tpb if new_tpb is not None else beat[2], beat[3], beat[4])
 			tracker.beats.append(newbeat)
+			if new_tpb:
+				tracker.time_per_beat = new_tpb
 			tracker.beat_loc = timestep
 			self.trackers = [tracker]
 
@@ -655,12 +660,27 @@ if args.file == 'jack':
 			wx.Frame.__init__(self, None, wx.ID_ANY, "beatdetect")
 			self.tap_btn = wx.Button(self, label="tap")
 			self.tap_btn.SetOwnBackgroundColour(wx.BLUE)
-			self.tap_btn.Bind(wx.EVT_BUTTON,self.on_tap)
+			self.tap_btn.Bind(wx.EVT_LEFT_DOWN,self.on_tap)
 			self.jackclient = jackclient
 			self.taps = queue.Queue(maxsize=100)
+			self.tap_history = []
 
-		def on_tap(self, foo):
-			self.taps.put(self.jackclient.frame_time)
+		def on_tap(self, ev):
+			ev.Skip() # because documentation on EVT_LEFT_DOWN says so
+
+			now = self.jackclient.frame_time
+			if len(self.tap_history) > 0 and self.tap_history[-1] < now - 1.5*self.jackclient.samplerate:
+				print(f"clearing tap history ({self.tap_history[-1]} too old for {now})")
+				self.tap_history = []
+
+			self.tap_history.append(now)
+
+			if len(self.tap_history) >= 2:
+				new_samples_per_beat = (self.tap_history[-1] - self.tap_history[0]) / (len(self.tap_history)-1)
+			else:
+				new_samples_per_beat = None
+
+			self.taps.put((now, new_samples_per_beat))
 
 		def flash(self, when):
 			delay_frames = when - self.jackclient.frame_time
@@ -700,15 +720,20 @@ if args.file == 'jack':
 			total_samples += frames
 			#assert all([b <= now for b in current_beats])
 
-			tap_ourframes = None
+			last_tap = None
 			try:
 				while True:
-					tap_ourframes = window.taps.get_nowait() - our_frametime_to_jack
+					last_tap = window.taps.get_nowait()
 			except queue.Empty:
 				pass
 
-			if tap_ourframes is not None:
-				bd.resync(bd.timestep_from_sample(tap_ourframes))
+			if last_tap is not None:
+				tap_jackframes, new_frames_per_beat = last_tap
+				tap_ourframes = tap_jackframes - our_frametime_to_jack
+
+				new_tpb = None if new_frames_per_beat is None else (bd.deltatimestep_from_deltasample(new_frames_per_beat))
+
+				bd.resync(bd.timestep_from_sample(tap_ourframes), new_tpb)
 				print("sync!")
 
 			#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")

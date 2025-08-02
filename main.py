@@ -216,8 +216,8 @@ class BeatDetector:
 
 			print(f"shifting next beat from {beat[0]} to {timestep} while {'retaining' if new_tpb is None else 'updating'} tpb={new_tpb}; formerly {tracker.time_per_beat}={beat[2]}")
 			newbeat = (timestep, False, new_tpb if new_tpb is not None else beat[2], beat[3], beat[4])
-			tracker.beats.append(newbeat)
-			if new_tpb:
+			tracker.beats = [newbeat]
+			if new_tpb is not None:
 				tracker.time_per_beat = new_tpb
 			tracker.beat_loc = timestep
 			self.trackers = [tracker]
@@ -402,7 +402,7 @@ class BeatDetector:
 				if self.verbose: print([tr.search_interval() for tr in self.trackers])
 				assert False # FIXME
 
-			DEDUP_LOC_THRESHOLD_MS = 10
+			DEDUP_LOC_THRESHOLD_MS = 10 # FIXME or 50?
 			self.trackers.sort(key = lambda t : -t.confidence)
 			trackers_dedup = []
 			for i in range(len(self.trackers)):

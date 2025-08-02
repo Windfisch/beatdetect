@@ -625,7 +625,8 @@ if args.file == 'jack':
 
 	with client:
 		while True:
-			semaphore.acquire(1)
+			while ringbuf_in.read_space < CHUNKSIZE*4:
+				semaphore.acquire(1)
 			assert ringbuf_in.read_space >= CHUNKSIZE*4
 
 			data = ringbuf_in.read(CHUNKSIZE*4)

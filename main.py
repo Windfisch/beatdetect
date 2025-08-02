@@ -658,12 +658,29 @@ if args.file == 'jack':
 	class MyFrame(wx.Frame):
 		def __init__(self, jackclient):
 			wx.Frame.__init__(self, None, wx.ID_ANY, "beatdetect")
+
 			self.tap_btn = wx.Button(self, label="tap")
 			self.tap_btn.SetOwnBackgroundColour(wx.BLUE)
 			self.tap_btn.Bind(wx.EVT_LEFT_DOWN,self.on_tap)
 			self.jackclient = jackclient
 			self.taps = queue.Queue(maxsize=100)
 			self.tap_history = []
+
+			self.labels = [wx.StaticText(self, label=f'tbd #{i}') for i in range(4)]
+			self.tempolabel = wx.StaticText(self, label='tempo')
+
+			hbox = wx.BoxSizer(wx.HORIZONTAL)
+			vbox1 = wx.BoxSizer(wx.VERTICAL)
+			vbox2 = wx.BoxSizer(wx.VERTICAL)
+			hbox.Add(vbox1, 5)
+			hbox.Add(vbox2, 2)
+			vbox1.Add(self.tap_btn)
+			vbox1.Add(self.tempolabel)
+			for l in self.labels:
+				vbox2.Add(l, 1)
+
+			self.SetSizer(hbox)
+
 
 		def on_tap(self, ev):
 			ev.Skip() # because documentation on EVT_LEFT_DOWN says so
@@ -687,6 +704,16 @@ if args.file == 'jack':
 			delay_millis = int(delay_frames / self.jackclient.samplerate * 1000)
 			wx.CallLater(delay_millis, lambda : self.tap_btn.SetOwnBackgroundColour(wx.RED))
 			wx.CallLater(delay_millis+60, lambda : self.tap_btn.SetOwnBackgroundColour(wx.BLUE))
+
+		def set_texts(self, texts, start=0):
+			def doit():
+				for label, text in zip(self.labels[start:], texts):
+					label.SetLabel(text)
+			wx.CallAfter(doit)
+
+		def set_bpm(self, bpm):
+			wx.CallAfter(lambda : self.tempolabel.SetLabel(f"{bpm:5.1f} bpm"))
+				
 
 	app = wx.App(False)
 	window = MyFrame(client)
@@ -739,14 +766,16 @@ if args.file == 'jack':
 			#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")
 
 			bd.process(data)
-			# FIXME this drops beats if there are more than one beat in the time frame.
+			# FIXME this drops beats if there are more than one beat in the time frame.a
+			tpb = None
 			if len(bd.greedy_beats) > 0:
+				tpb = bd.greedy_beats[-1][6]
 				if bd.greedy_beats[-1][0] != last_greedy_beat:
 					last_greedy_beat = bd.greedy_beats[-1][0]
 					beat_s = bd.greedy_beats[-1][0] * bd.timestep_real
 					#print(f"beat at {bd.greedy_beats[-1][0]:7.1f}, {beat_s:5.1f}s, now = {now:5.1f}s, lag = {now-beat_s:6.3}s, frames = {frames}, audio_backlog_pos = {audio_backlog_pos}")
 
-					upcoming_beats = [(bd.greedy_beats[-1][0] + i * bd.greedy_beats[-1][6]) * bd.timestep_real * samplerate for i in range(20)]
+					upcoming_beats = [(bd.greedy_beats[-1][0] + i * tpb) * bd.timestep_real * samplerate for i in range(20)]
 					upcoming_beats = [b for b in upcoming_beats if b >= now_frames and all([b >= cb + 0.7*bd.greedy_beats[-1][2] for cb in current_beats])]
 					#print(current_beats, upcoming_beats)
 
@@ -775,6 +804,10 @@ if args.file == 'jack':
 			for b in current_beats:
 				if b >= now_frames:
 					window.flash(b + our_frametime_to_jack)
+
+			window.set_texts(['%4.1f%%' % (t.confidence*100) for t in bd.trackers[0:4]])
+			bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))
+			window.set_bpm(bpm)
 
 
 	exit(0)

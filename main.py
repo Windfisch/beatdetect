@@ -617,8 +617,6 @@ if args.file == 'jack':
 	audio_in = client.inports.register('audio_in')
 	click_out = client.outports.register('click_out')
 
-	semaphore = threading.Semaphore(0)
-
 	total_samples = 0
 	last_greedy_beat = 0
 
@@ -628,42 +626,111 @@ if args.file == 'jack':
 	CHUNKSIZE = 1*1024 # 8192
 
 
-	ringbuf_in = jack.RingBuffer(max(64000, 4*CHUNKSIZE)*4)
-	ringbuf_out = jack.RingBuffer(max(64000, 4*CHUNKSIZE)*4)
-	ringbuf_time = jack.RingBuffer(256)
-	ringbuf_out.write([0]*CHUNKSIZE*4)
+	class JackHandler:
+		def __init__(self, client):
+			self.client = client
+			self.event = threading.Event()
+			self.ringbuf_in = jack.RingBuffer(max(2**16, 4*CHUNKSIZE)*4)
+			self.ringbuf_beats = jack.RingBuffer(256)
+			self.last_beatupdate_frames = None
+			self.last_beatupdate_tpb = None
+			self.click_mask = np.zeros(1024*32)
+			self.clicks = [0]*16
+			self.n_clicks = 0
+			self.SINE_PERIOD_FRAMES = int(48000//880)
+			self.sine = np.sin(np.arange(0, 1024*32) /self.SINE_PERIOD_FRAMES*2*3.141592654)
 
-	lockout = False
+		def read_input(self, chunksize):
+			assert chunksize > 0
 
-	missing_outdata = 0
+			data = bytes()
+			t0 = None
+			while len(data) // 4 < chunksize:
+				time, one_audio = self.read_one_input_segment()
+				if t0 is None:
+					t0 = time
+				assert len(data) % 4 == 0
+				if time != t0 + len(data)//4:
+					print(f"ERROR: time = {time}, t0 + len(data)/4 = {t0} + {len(data)//4} = {t0+len(data)//4}")
+				#assert time == t0 + len(data) // 4
+				data += one_audio
+
+			return t0, data
+
+		def read_one_input_segment(self):
+			self.event.clear()
+
+			while self.ringbuf_in.read_space < 8:
+				self.event.wait()
+				self.event.clear()
+
+			frames_bytes = self.ringbuf_in.read(8)
+			assert len(frames_bytes) == 8
+			frames = int.from_bytes(frames_bytes, 'little')
+
+			while self.ringbuf_in.read_space < 8 + 4*frames:
+				self.event.wait()
+				self.event.clear()
+
+			time_bytes = self.ringbuf_in.read(8)
+			assert len(time_bytes) == 8
+			time = int.from_bytes(time_bytes, 'little')
+			
+			audio = self.ringbuf_in.read(4*frames)
+			assert len(audio) == 4*frames
+
+			return time, audio
+
+		def update_beats(self, time, tpb):
+			assert self.ringbuf_beats.write_space >= 16
+			self.ringbuf_beats.write(int.to_bytes(time, 8, 'little'))
+			self.ringbuf_beats.write(int.to_bytes(tpb, 8, 'little'))
+
+		def process(self, frames):
+			if frames == 0: return
+
+			t0 = self.client.last_frame_time
+
+			inbuf = self.client.inports[0].get_buffer()
+			assert len(inbuf) == 4*frames
+			n = self.ringbuf_in.write(int.to_bytes(frames, 8, 'little'))
+			assert n == 8
+			n = self.ringbuf_in.write(int.to_bytes(t0, 8, 'little'))
+			assert n == 8
+			n = self.ringbuf_in.write(inbuf)
+			assert n == frames * 4
+			self.event.set()
+
+			if self.ringbuf_beats.read_space >= 16:
+				# skip all updates but the latest
+				self.ringbuf_beats.read_advance((self.ringbuf_beats.read_space // 16 - 1) * 16)
+				# read the latest update
+				buf = self.ringbuf_beats.read(16)
+				self.last_beatupdate_frames = int.from_bytes(buf[0:8], 'little')
+				self.last_beatupdate_tpb = int.from_bytes(buf[8:16], 'little')
+				assert self.last_beatupdate_frames <= t0
+
+			CLICK_FRAMES=int(0.06 * 48000)
+			self.click_mask[0:frames] = 0
+			if self.last_beatupdate_frames is not None:
+				first_relevant_beat_index = (t0 - self.last_beatupdate_frames - CLICK_FRAMES + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
+				first_irrelevant_beat_index = (t0 + frames - self.last_beatupdate_frames + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
+				#print(first_relevant_beat_index)
+				for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
+					start = self.last_beatupdate_frames + i*self.last_beatupdate_tpb - t0
+					end = start + CLICK_FRAMES
+					self.click_mask[max(0, start) : max(end, frames)] += 0.5
+			
+			sin_offset = t0 % self.SINE_PERIOD_FRAMES
+			# FIXME this should be get_buffer
+			client.outports[0].get_array()[:] = self.sine[sin_offset : sin_offset+frames] * self.click_mask[:frames]
+
+	jackhandler = JackHandler(client)
 
 	@client.set_process_callback
 	def process(frames):
-		assert frames <= CHUNKSIZE
-		global ringbuf_in
-		global ringbuf_out
-		global lockout
-		global missing_outdata
-		global semaphore
-
-		if frames == 0: return
-		
-		n = ringbuf_in.write(client.inports[0].get_buffer())
-		assert n == frames * 4
-		n = ringbuf_time.write(int.to_bytes(client.last_frame_time, 8, 'little'))
-		assert n == 8
-		semaphore.release(1)
-
-		if missing_outdata > 0:
-			missing_outdata -= len(ringbuf_out.read(missing_outdata))
-			print(f"missing: {missing_outdata}")
-		outdata = ringbuf_out.read(frames*4)
-		if len(outdata) < frames*4:
-			missing_outdata += frames*4 - len(outdata)
-		#assert len(outdata) == frames*4
-		else:
-			client.outports[0].get_buffer()[:] = outdata
-
+		global jackhandler
+		jackhandler.process(frames)
 
 
 	samplerate = client.samplerate
@@ -740,29 +807,17 @@ if args.file == 'jack':
 		print("hi")
 		our_frametime = 0
 		while True:
-			while ringbuf_in.read_space < CHUNKSIZE*4:
-				semaphore.acquire(1)
-			assert ringbuf_in.read_space >= CHUNKSIZE*4
-			assert ringbuf_time.read_space >= 8
-
-			data = ringbuf_in.read(CHUNKSIZE*4)
-			assert len(data) == CHUNKSIZE*4
+			jack_frametime, data = jackhandler.read_input(CHUNKSIZE)
+			#print(f"got len(data) = {len(data)} bytes / {len(data)//4} samples at {jack_frametime} vs {our_frametime}")
+			assert len(data) == CHUNKSIZE*4 # FIXME this might not be true
 			data = np.frombuffer(data, dtype=np.float32)
-			jack_frametime = ringbuf_time.read(8)
-			assert len(jack_frametime) == 8
-			jack_frametime = int.from_bytes(jack_frametime, 'little')
-			# our audio buffer starts at frametime
-
 			frames = len(data)
 
-			our_frametime_to_jack = jack_frametime - our_frametime
-			our_frametime += frames # TODO move upwards?
-			
-			now = total_samples / samplerate
-			now_frames = total_samples + CHUNKSIZE
-			total_samples += frames
-			#assert all([b <= now for b in current_beats])
+			# our audio buffer starts at jack_frametime
 
+			our_frametime_to_jack = jack_frametime - our_frametime
+			our_frametime += frames
+			
 			last_tap = None
 			try:
 				while True:
@@ -782,44 +837,22 @@ if args.file == 'jack':
 			#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")
 
 			bd.process(data)
-			# FIXME this drops beats if there are more than one beat in the time frame.a
+			# FIXME this drops beats if there are more than one beat in the time frame.
 			tpb = None
 			if len(bd.greedy_beats) > 0:
 				tpb = bd.greedy_beats[-1][6]
 				if bd.greedy_beats[-1][0] != last_greedy_beat:
 					last_greedy_beat = bd.greedy_beats[-1][0]
-					beat_s = bd.greedy_beats[-1][0] * bd.timestep_real
-					#print(f"beat at {bd.greedy_beats[-1][0]:7.1f}, {beat_s:5.1f}s, now = {now:5.1f}s, lag = {now-beat_s:6.3}s, frames = {frames}, audio_backlog_pos = {audio_backlog_pos}")
 
-					upcoming_beats = [(bd.greedy_beats[-1][0] + i * tpb) * bd.timestep_real * samplerate for i in range(20)]
-					upcoming_beats = [b for b in upcoming_beats if b >= now_frames and all([b >= cb + 0.7*bd.greedy_beats[-1][2] for cb in current_beats])]
-					#print(current_beats, upcoming_beats)
+					beat_samples = int(bd.greedy_beats[-1][0] * bd.timestep_real * samplerate)
+					samples_per_beat = int(bd.greedy_beats[-1][6] * bd.timestep_real * samplerate)
 
-			CLICK_FRAMES=int(0.06 * 48000)
-			current_beats = [b for b in current_beats if b >= now_frames - CLICK_FRAMES]
-			current_beats += [b for b in upcoming_beats if b <= now_frames+frames]
-			upcoming_beats = [b for b in upcoming_beats if b >  now_frames+frames]
-			#print (now_frames, current_beats, upcoming_beats)
-			
-			SINE_PERIOD_FRAMES = int(48000//880)
-			total_samples=int(total_samples)
-			clicks = np.zeros(frames, dtype=np.float32)
-			clicks[:] = (np.sin(np.arange(total_samples%SINE_PERIOD_FRAMES, total_samples % SINE_PERIOD_FRAMES +frames) /SINE_PERIOD_FRAMES*2*3.141592654)) *0.5
+					jackhandler.update_beats(beat_samples + our_frametime_to_jack, samples_per_beat)
 
-			click_mask = np.zeros(frames)
-			for b in current_beats:
-				b=int(b)
-				click_mask[max(0,b-now_frames) : b-now_frames+CLICK_FRAMES] += 1
 
-			clicks[:] *= click_mask
-			
-			bs = clicks.tobytes()
-			n = ringbuf_out.write(bs)
-			assert n==len(bs)
-
-			for b in current_beats:
-				if b >= now_frames:
-					window.flash(b + our_frametime_to_jack)
+			#for b in current_beats: # FIXME
+			#	if b >= now_frames:
+			#		window.flash(b + our_frametime_to_jack)
 
 			window.set_texts(['%4.1f%% ( * %3.0f%%)' % (t.confidence*100, t.greedy_continuity*100) for t in bd.trackers[0:4]])
 			bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))

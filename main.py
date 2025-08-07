@@ -815,7 +815,7 @@ if args.file == 'jack':
 		while True:
 			jack_frametime, data = jackhandler.read_input(CHUNKSIZE)
 			#print(f"got len(data) = {len(data)} bytes / {len(data)//4} samples at {jack_frametime} vs {our_frametime}")
-			assert len(data) == CHUNKSIZE*4 # FIXME this might not be true
+			assert len(data) >= CHUNKSIZE*4
 			data = np.frombuffer(data, dtype=np.float32)
 			frames = len(data)
 
@@ -860,7 +860,7 @@ if args.file == 'jack':
 
 			t0 = client.frame_time
 			first_relevant_beat_index = (t0 - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
-			first_irrelevant_beat_index = (t0 + CHUNKSIZE - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
+			first_irrelevant_beat_index = (t0 + max(CHUNKSIZE, frames) - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
 			#print(first_relevant_beat_index)
 			for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
 				beat = last_beatupdate_frames + i*last_beatupdate_tpb

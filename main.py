@@ -750,6 +750,7 @@ if args.file == 'jack':
 
 			self.labels = [wx.StaticText(self, label=f'tbd #{i}') for i in range(4)]
 			self.tempolabel = wx.StaticText(self, label='tempo')
+			self.infolabel = wx.StaticText(self, label='info')
 
 			hbox = wx.BoxSizer(wx.HORIZONTAL)
 			vbox1 = wx.BoxSizer(wx.VERTICAL)
@@ -758,6 +759,7 @@ if args.file == 'jack':
 			hbox.Add(vbox2, 2)
 			vbox1.Add(self.tap_btn)
 			vbox1.Add(self.tempolabel)
+			vbox1.Add(self.infolabel)
 			for l in self.labels:
 				vbox2.Add(l, 1)
 
@@ -795,6 +797,9 @@ if args.file == 'jack':
 
 		def set_bpm(self, bpm):
 			wx.CallAfter(lambda : self.tempolabel.SetLabel(f"{bpm:5.1f} bpm"))
+				
+		def set_info(self, info):
+			wx.CallAfter(lambda : self.infolabel.SetLabel(info))
 				
 
 	app = wx.App(False)
@@ -864,6 +869,7 @@ if args.file == 'jack':
 			window.set_texts(['%4.1f%% ( * %3.0f%%)' % (t.confidence*100, t.greedy_continuity*100) for t in bd.trackers[0:4]])
 			bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))
 			window.set_bpm(bpm)
+			window.set_info(f"predicting {first_relevant_beat_index} .. {first_irrelevant_beat_index} beats ahead")
 
 
 	exit(0)

@@ -769,7 +769,7 @@ if args.file == 'jack':
 		def on_tap(self, ev):
 			ev.Skip() # because documentation on EVT_LEFT_DOWN says so
 
-			now = self.jackclient.frame_time
+			now = self.jackclient.frame_time - self.jackclient.blocksize
 			if len(self.tap_history) > 0 and self.tap_history[-1] < now - 1.5*self.jackclient.samplerate:
 				print(f"clearing tap history ({self.tap_history[-1]} too old for {now})")
 				self.tap_history = []

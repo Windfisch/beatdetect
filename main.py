@@ -710,16 +710,15 @@ if args.file == 'jack':
 				self.last_beatupdate_tpb = int.from_bytes(buf[8:16], 'little')
 				assert self.last_beatupdate_frames <= t0
 
-			CLICK_FRAMES=int(0.06 * 48000)
+			CLICK_FRAMES=int(0.06 * self.client.samplerate)
 			self.click_mask[0:frames] = 0
 			if self.last_beatupdate_frames is not None:
 				first_relevant_beat_index = (t0 - self.last_beatupdate_frames - CLICK_FRAMES + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
 				first_irrelevant_beat_index = (t0 + frames - self.last_beatupdate_frames + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
-				#print(first_relevant_beat_index)
 				for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
 					start = self.last_beatupdate_frames + i*self.last_beatupdate_tpb - t0
 					end = start + CLICK_FRAMES
-					self.click_mask[max(0, start) : max(end, frames)] += 0.5
+					self.click_mask[max(0, start) : min(end, frames)] += 0.5
 			
 			sin_offset = t0 % self.SINE_PERIOD_FRAMES
 			# FIXME this should be get_buffer

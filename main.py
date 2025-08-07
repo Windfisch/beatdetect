@@ -651,7 +651,7 @@ if args.file == 'jack':
 					t0 = time
 				assert len(data) % 4 == 0
 				if time != t0 + len(data)//4:
-					print(f"ERROR: time = {time}, t0 + len(data)/4 = {t0} + {len(data)//4} = {t0+len(data)//4}")
+					print(f"ERROR: lost {time - (t0 + len(data)//4)} samples; time = {time}, t0 + len(data)/4 = {t0} + {len(data)//4} = {t0+len(data)//4}")
 				#assert time == t0 + len(data) // 4
 				data += one_audio
 
@@ -806,6 +806,8 @@ if args.file == 'jack':
 	with client:
 		print("hi")
 		our_frametime = 0
+		last_beatupdate_frames = 0
+		last_beatupdate_tpb = 48000
 		while True:
 			jack_frametime, data = jackhandler.read_input(CHUNKSIZE)
 			#print(f"got len(data) = {len(data)} bytes / {len(data)//4} samples at {jack_frametime} vs {our_frametime}")
@@ -849,10 +851,16 @@ if args.file == 'jack':
 
 					jackhandler.update_beats(beat_samples + our_frametime_to_jack, samples_per_beat)
 
+					last_beatupdate_frames = beat_samples + our_frametime_to_jack
+					last_beatupdate_tpb = samples_per_beat
 
-			#for b in current_beats: # FIXME
-			#	if b >= now_frames:
-			#		window.flash(b + our_frametime_to_jack)
+			t0 = client.frame_time
+			first_relevant_beat_index = (t0 - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
+			first_irrelevant_beat_index = (t0 + CHUNKSIZE - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
+			#print(first_relevant_beat_index)
+			for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
+				beat = last_beatupdate_frames + i*last_beatupdate_tpb
+				window.flash(beat)
 
 			window.set_texts(['%4.1f%% ( * %3.0f%%)' % (t.confidence*100, t.greedy_continuity*100) for t in bd.trackers[0:4]])
 			bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))

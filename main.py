@@ -11,6 +11,7 @@ import time
 import argparse
 from types import SimpleNamespace
 import jack
+from clock_generator import ClockGenerator
 
 import wx
 import queue
@@ -616,6 +617,7 @@ if args.file == 'jack':
 	client = jack.Client('beatdetect')
 	audio_in = client.inports.register('audio_in')
 	click_out = client.outports.register('click_out')
+	midiclock_out = client.midi_outports.register('midiclock_out')
 
 	total_samples = 0
 	last_greedy_beat = 0
@@ -639,6 +641,8 @@ if args.file == 'jack':
 			self.n_clicks = 0
 			self.SINE_PERIOD_FRAMES = int(48000//880)
 			self.sine = np.sin(np.arange(0, 1024*32) /self.SINE_PERIOD_FRAMES*2*3.141592654)
+			self.MIDI_CLOCK=[0xF8]
+			self.midi_clock_generator = ClockGenerator(24, min_delta = 10)
 
 		def read_input(self, chunksize):
 			assert chunksize > 0
@@ -690,6 +694,9 @@ if args.file == 'jack':
 			if frames == 0: return
 
 			t0 = self.client.last_frame_time
+				
+			midi_outport = self.client.midi_outports[0]
+			midi_outport.clear_buffer()
 
 			inbuf = self.client.inports[0].get_buffer()
 			assert len(inbuf) == 4*frames
@@ -709,6 +716,8 @@ if args.file == 'jack':
 				self.last_beatupdate_frames = int.from_bytes(buf[0:8], 'little')
 				self.last_beatupdate_tpb = int.from_bytes(buf[8:16], 'little')
 				assert self.last_beatupdate_frames <= t0
+				
+				self.midi_clock_generator.update_beats(self.last_beatupdate_frames, self.last_beatupdate_tpb)
 
 			CLICK_FRAMES=int(0.06 * self.client.samplerate)
 			self.click_mask[0:frames] = 0
@@ -719,6 +728,8 @@ if args.file == 'jack':
 					start = self.last_beatupdate_frames + i*self.last_beatupdate_tpb - t0
 					end = start + CLICK_FRAMES
 					self.click_mask[max(0, start) : min(end, frames)] += 0.5
+
+				self.midi_clock_generator.get_ticks_cb(t0, t0+frames, lambda time, _ : midi_outport.write_midi_event(int(time-t0), self.MIDI_CLOCK))
 			
 			sin_offset = t0 % self.SINE_PERIOD_FRAMES
 			# FIXME this should be get_buffer

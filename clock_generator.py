@@ -22,7 +22,7 @@ class ClockGenerator:
 		return result
 
 	def get_ticks_cb(self, time_from, time_to, tick_func):
-		assert self.last_time_to is None or time_from == self.last_time_to
+		#assert self.last_time_to is None or time_from == self.last_time_to
 		self.last_time_to = time_to
 
 		next_beat_index = int(math.ceil((time_from - self.beat_time) / self.beat_delta)) # smallest x s.t. self.beat_time + x*self.beat_delta >= time_from

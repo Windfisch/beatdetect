@@ -1,4 +1,5 @@
 import soundfile as sf
+import gc
 import threading
 import math
 import sys
@@ -19,6 +20,10 @@ import queue
 from numpy_ringbuf import Ringbuf2D, Ringbuf1D
 from timetracker import TimeTracker
 
+#gc.disable()
+
+# usage: python main.py jack 0
+
 p = argparse.ArgumentParser()
 p.add_argument('file')
 p.add_argument('start')
@@ -26,6 +31,7 @@ p.add_argument('--bpm', type=float)
 p.add_argument('--offbeat', action='store_true')
 p.add_argument('--duration', type=float, default=20)
 p.add_argument('--step-by-step', action='store_true', default=False)
+p.add_argument('--nogui', action='store_true', default=False)
 p.add_argument('--plot', action='store_true', default=False)
 p.add_argument('--timestep', type=float, default=1)
 p.add_argument('--chunksize', type=int, default=-1)
@@ -699,6 +705,7 @@ if args.file == 'jack':
 			midi_outport.clear_buffer()
 
 			inbuf = self.client.inports[0].get_buffer()
+
 			assert len(inbuf) == 4*frames
 			n = self.ringbuf_in.write(int.to_bytes(frames, 8, 'little'))
 			assert n == 8
@@ -813,10 +820,11 @@ if args.file == 'jack':
 			wx.CallAfter(lambda : self.infolabel.SetLabel(info))
 				
 
-	app = wx.App(False)
-	window = MyFrame(client)
-	window.Show(True)
-	threading.Thread(target = lambda : app.MainLoop()).start()
+	if not args.nogui:
+		app = wx.App(False)
+		window = MyFrame(client)
+		window.Show(True)
+		threading.Thread(target = lambda : app.MainLoop()).start()
 
 	with client:
 		print("hi")
@@ -834,13 +842,15 @@ if args.file == 'jack':
 
 			our_frametime_to_jack = jack_frametime - our_frametime
 			our_frametime += frames
-			
-			last_tap = None
-			try:
-				while True:
-					last_tap = window.taps.get_nowait()
-			except queue.Empty:
-				pass
+		
+			if not args.nogui:
+				last_tap = None
+				try:
+					while True:
+						last_tap = window.taps.get_nowait()
+						pass
+				except queue.Empty:
+					pass
 
 			if last_tap is not None:
 				tap_jackframes, new_frames_per_beat = last_tap
@@ -873,14 +883,19 @@ if args.file == 'jack':
 			first_relevant_beat_index = (t0 - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
 			first_irrelevant_beat_index = (t0 + max(CHUNKSIZE, frames) - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
 			#print(first_relevant_beat_index)
-			for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
-				beat = last_beatupdate_frames + i*last_beatupdate_tpb
-				window.flash(beat)
 
-			window.set_texts(['%4.1f%% ( * %3.0f%%)' % (t.confidence*100, t.greedy_continuity*100) for t in bd.trackers[0:4]])
-			bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))
-			window.set_bpm(bpm)
-			window.set_info(f"predicting {first_relevant_beat_index} .. {first_irrelevant_beat_index} beats ahead")
+			if not args.nogui:
+				for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
+					beat = last_beatupdate_frames + i*last_beatupdate_tpb
+					window.flash(beat)
+
+				window.set_texts(['%4.1f%% ( * %3.0f%%)' % (t.confidence*100, t.greedy_continuity*100) for t in bd.trackers[0:4]])
+				bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))
+				window.set_bpm(bpm)
+				#window.set_info(f"predicting {first_relevant_beat_index} .. {first_irrelevant_beat_index} beats ahead")
+				#window.set_info(f"{gc.get_count()}")
+				window.set_info(f"{len(bd.greedy_beats)} / {len(bd.trackers[0].beats) if len(bd.trackers)>0 else 0}")
+				#print(gc.get_stats())
 
 
 	exit(0)

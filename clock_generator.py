@@ -30,6 +30,8 @@ class ClockGenerator:
 
 		if self.verbose: print(f'\n\nget_ticks {time_from} .. {time_to}, {next_beat_index=} {next_beat_time=}\n')
 		assert next_beat_time >= time_from
+		if self.last_emitted_time >= time_from:
+			print(f"WTF: {self.last_emitted_time=}, {time_from=}")
 		assert self.last_emitted_time < time_from
 
 		# if we're clean (last beat has been fully emitted) but we just missed the next beat, let's just catch up instead of waiting almost a full beat

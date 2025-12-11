@@ -61,7 +61,6 @@ class BeatTracker:
 		global serial_number
 		self.timestep = timestep
 		self.sigma = sigma
-		self.parent = parent
 		self.serial = serial_number
 		serial_number+=1
 		self.lam = lam
@@ -72,7 +71,7 @@ class BeatTracker:
 		self.beats = beats[:]
 		self.used = False
 		if confidence > 0.05:
-			#print(f"Tracker #{self.parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
+			#print(f"Tracker #{parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
 			pass
 
 	def tpb(self):

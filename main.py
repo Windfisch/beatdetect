@@ -751,6 +751,22 @@ if args.file == 'jack':
 		global jackhandler
 		jackhandler.process(frames)
 
+	@client.set_shutdown_callback
+	def on_shutdown(status, reason):
+		print(f"shutting down. {reason}")
+	
+	@client.set_xrun_callback
+	def on_xrun(usecs):
+		print(f"XRUN {usecs}us")
+
+	@client.set_samplerate_callback
+	def on_samplerate(samplerate):
+		print(f"SAMPLE RATE CHANGE {samplerate}")
+
+	@client.set_blocksize_callback
+	def on_blocksize(blocksize):
+		print(f"BLOCKSIZE CHANGE {blocksize}")
+
 
 	samplerate = client.samplerate
 	bd = BeatDetector(samplerate, force_bpm = args.bpm, timestep_desired_ms = args.timestep)

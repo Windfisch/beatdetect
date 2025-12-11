@@ -692,9 +692,11 @@ if args.file == 'jack':
 			return time, audio
 
 		def update_beats(self, time, tpb):
-			assert self.ringbuf_beats.write_space >= 16
-			self.ringbuf_beats.write(int.to_bytes(time, 8, 'little'))
-			self.ringbuf_beats.write(int.to_bytes(tpb, 8, 'little'))
+			if self.ringbuf_beats.write_space >= 16:
+				self.ringbuf_beats.write(int.to_bytes(time, 8, 'little'))
+				self.ringbuf_beats.write(int.to_bytes(tpb, 8, 'little'))
+			else:
+				print("not enough space in ringbuf_beats")
 
 		def process(self, frames):
 			if frames == 0: return

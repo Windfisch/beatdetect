@@ -70,6 +70,7 @@ class BeatTracker:
 		self.beats = beats # FIXME FIXME FIXME
 		self.used = False
 
+	# FIXME is this even used outside of greedy tracking?
 	def tpb(self):
 		if len(self.beats) > 10+SIMULATE_DATA:# FIXME FIXME FIXME 2:
 			first = max(0, len(self.beats) - 1 - 8)
@@ -78,6 +79,7 @@ class BeatTracker:
 		else:
 			return self.time_per_beat
 
+	# returns interval where beats are expected as (begin, end) tuple; unit = timesteps
 	def search_interval(self):
 		expected_loc = self.beat_loc + self.time_per_beat
 		win_timesteps = self.sigma * 4
@@ -88,7 +90,6 @@ class BeatTracker:
 			# kill degenerate beat detectors that suggest an infinite tempo
 			return []
 
-
 		expected_loc = self.beat_loc + self.time_per_beat
 		peaks = []
 
@@ -98,7 +99,6 @@ class BeatTracker:
 			if loc > self.beat_loc + self.time_per_beat*0.1:
 				peaks.append((relevance, loc, True, prom))
 
-		#print(f"expected = {expected_loc}, max = {max(peaks+[(-999,0, False, 0)])}, lastprom = {self.last_prom}, relevance = {1 / (self.lam * math.exp(-self.lam * self.last_prom))}")
 		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom * MIN_REL_PROMINENCE)), expected_loc, False, 0))
 
 		relevance_sum = sum([r for r,l,f,p in peaks])
@@ -948,23 +948,23 @@ for i in range(math.ceil(40 * samplerate / args.chunksize)):
 
 
 
-if args.plot and False: # FIXME
-	trackerax.clear()
-	trackerax.set_xlim(0, args.duration)
-	trackerax.set_ylim(-0.05, 1.05)
-	trackerax2.clear()
-	trackerax2.set_xlim(0, args.duration)
-	trackerax2.set_ylim(-0.15, 1.15)
-
-	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
-	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
-
-	scatter_xs = []
-	scatter_ys = []
-	for t in trackers:
-		scatter_xs += [b[0]*timestep_real for b in t.beats]
-		scatter_ys += [t.confidence] * len(t.beats)
-	trackerax.scatter(scatter_xs, scatter_ys, color='red')
+#if args.plot and False: # FIXME
+#	trackerax.clear()
+#	trackerax.set_xlim(0, args.duration)
+#	trackerax.set_ylim(-0.05, 1.05)
+#	trackerax2.clear()
+#	trackerax2.set_xlim(0, args.duration)
+#	trackerax2.set_ylim(-0.15, 1.15)
+#
+#	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
+#	trackerax2.scatter([b[0]*timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
+#
+#	scatter_xs = []
+#	scatter_ys = []
+#	for t in trackers:
+#		scatter_xs += [b[0]*timestep_real for b in t.beats]
+#		scatter_ys += [t.confidence] * len(t.beats)
+#	trackerax.scatter(scatter_xs, scatter_ys, color='red')
 
 for t in bd.trackers:
 	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)

@@ -54,18 +54,13 @@ def get_search_interval(trackers):
 		hi = max(hi, h)
 	return (int(lo), int(hi))
 
-serial_number = 1
-
 tt = TimeTracker()
 
 class BeatTracker:
 	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
-	def __init__(self, parent, timestep, sigma, lam, beat_loc, time_per_beat, confidence, last_prom, beats):
-		global serial_number
+	def __init__(self, timestep, sigma, lam, beat_loc, time_per_beat, confidence, last_prom, beats):
 		self.timestep = timestep
 		self.sigma = sigma
-		self.serial = serial_number
-		serial_number+=1
 		self.lam = lam
 		self.beat_loc = beat_loc
 		self.time_per_beat = time_per_beat
@@ -74,9 +69,6 @@ class BeatTracker:
 		#self.beats = beats[-10:] # limit beat array size
 		self.beats = beats # FIXME FIXME FIXME
 		self.used = False
-		if confidence > 0.05:
-			#print(f"Tracker #{parent} spawns #{self.serial} at {self.beat_loc} with {confidence*100:.2f}%, expected = {self.time_per_beat+self.beat_loc:.2f}, last_prom = {self.last_prom}, tpb = {self.time_per_beat:.2f}")
-			pass
 
 	def tpb(self):
 		if len(self.beats) > 10+SIMULATE_DATA:# FIXME FIXME FIXME 2:
@@ -126,7 +118,7 @@ class BeatTracker:
 			conf_new = confidence * rel
 			#print(f"spawning found={found}, rel={rel}, conf={conf_new}, prom={prom}")
 			prom_new = prom_alpha*self.last_prom + (1-prom_alpha)*prom
-			result.append(BeatTracker(self.serial, self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
+			result.append(BeatTracker(self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
 		return result
 
 SIGMA_MS=30 # 30 is good for most stuff
@@ -368,7 +360,7 @@ class BeatDetector:
 
 						if self.plot:
 							self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
-						self.trackers = [BeatTracker(0, self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [(phase, False, periodicity, amplitude, amplitude)])] # FIXME FIXME FIXME
+						self.trackers = [BeatTracker(self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [(phase, False, periodicity, amplitude, amplitude)])] # FIXME FIXME FIXME
 
 						self.need_tempo = False
 

@@ -46,6 +46,7 @@ MIN_REL_PROMINENCE = 0.25
 
 if args.plot:
 	import matplotlib.pyplot as plt
+	import matplotlib
 
 def get_search_interval(trackers):
 	lo = 999999
@@ -762,19 +763,21 @@ if args.file == 'jack':
 				self.ringbuf_beats.read_advance((self.ringbuf_beats.read_space // 16 - 1) * 16)
 				# read the latest update
 				buf = self.ringbuf_beats.read(16)
-				self.last_beatupdate_frames = int.from_bytes(buf[0:8], 'little')
-				self.last_beatupdate_tpb = int.from_bytes(buf[8:16], 'little')
-				assert self.last_beatupdate_frames <= t0
+				last_beatupdate_frames = int.from_bytes(buf[0:8], 'little')
+				last_beatupdate_tpb = int.from_bytes(buf[8:16], 'little')
+				self.last_beatupdate_frames = last_beatupdate_frames
+				self.last_beatupdate_tpb = last_beatupdate_tpb
+				assert last_beatupdate_frames <= t0
 				
-				self.midi_clock_generator.update_beats(self.last_beatupdate_frames, self.last_beatupdate_tpb)
+				self.midi_clock_generator.update_beats(last_beatupdate_frames, last_beatupdate_tpb)
 
 			CLICK_FRAMES=int(0.06 * self.client.samplerate)
 			self.click_mask[0:frames] = 0
-			if self.last_beatupdate_frames is not None:
-				first_relevant_beat_index = (t0 - self.last_beatupdate_frames - CLICK_FRAMES + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
-				first_irrelevant_beat_index = (t0 + frames - self.last_beatupdate_frames + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
+			if last_beatupdate_frames is not None:
+				first_relevant_beat_index = (t0 - last_beatupdate_frames - CLICK_FRAMES + self.last_beatupdate_tpb-1) // last_beatupdate_tpb
+				first_irrelevant_beat_index = (t0 + frames - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
 				for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
-					start = self.last_beatupdate_frames + i*self.last_beatupdate_tpb - t0
+					start = last_beatupdate_frames + i*last_beatupdate_tpb - t0
 					end = start + CLICK_FRAMES
 					self.click_mask[max(0, start) : min(end, frames)] += 0.5
 
@@ -811,7 +814,10 @@ if args.file == 'jack':
 	samplerate = client.samplerate
 	bd = BeatDetector(samplerate, force_bpm = args.bpm, timestep_desired_ms = args.timestep)
 
-	beats_to_gui = queue.Queue(maxsize=10)
+	@dataclass
+	class Tap:
+		timestamp_samples: int
+		samples_per_beat: int|None
 
 	class MyFrame(wx.Frame):
 		def __init__(self, jackclient):
@@ -821,7 +827,7 @@ if args.file == 'jack':
 			self.tap_btn.SetOwnBackgroundColour(wx.BLUE)
 			self.tap_btn.Bind(wx.EVT_LEFT_DOWN,self.on_tap)
 			self.jackclient = jackclient
-			self.taps = queue.Queue(maxsize=100)
+			self.taps: queue.Queue[Tap] = queue.Queue(maxsize=100)
 			self.tap_history = []
 
 			self.labels = [wx.StaticText(self, label=f'tbd #{i}') for i in range(4)]
@@ -852,12 +858,11 @@ if args.file == 'jack':
 
 			self.tap_history.append(now)
 
+			new_samples_per_beat: int|None = None
 			if len(self.tap_history) >= 2:
 				new_samples_per_beat = (self.tap_history[-1] - self.tap_history[0]) / (len(self.tap_history)-1)
-			else:
-				new_samples_per_beat = None
 
-			self.taps.put((now, new_samples_per_beat))
+			self.taps.put(Tap(now, new_samples_per_beat))
 
 		def flash(self, when):
 			delay_frames = when - self.jackclient.frame_time
@@ -906,15 +911,13 @@ if args.file == 'jack':
 				try:
 					while True:
 						last_tap = window.taps.get_nowait()
-						pass
 				except queue.Empty:
 					pass
 
 			if last_tap is not None:
-				tap_jackframes, new_frames_per_beat = last_tap
-				tap_ourframes = tap_jackframes - our_frametime_to_jack
+				tap_ourframes = last_tap.timestamp_samples - our_frametime_to_jack
 
-				new_tpb = None if new_frames_per_beat is None else (bd.deltatimestep_from_deltasample(new_frames_per_beat))
+				new_tpb = None if last_tap.samples_per_beat is None else (bd.deltatimestep_from_deltasample(last_tap.samples_per_beat))
 
 				bd.resync(bd.timestep_from_sample(tap_ourframes), new_tpb)
 				print("sync!")
@@ -1050,8 +1053,8 @@ print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(erro
 #print(f"lambda = {lam}")
 
 if args.plot:
-	fig, axs = plt.subplots(1,1)
-	ax=axs
+	fig, axs = plt.subplots(1,1, squeeze=False)
+	ax: matplotlib.axes.Axes = axs[0,0]
 
 	bpms = []
 	ts = []

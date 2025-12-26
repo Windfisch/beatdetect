@@ -1,5 +1,5 @@
 from dataclasses import dataclass, astuple
-from typing import Self
+from typing import Self, Sequence, Any
 import soundfile as sf
 import gc
 import threading
@@ -82,10 +82,16 @@ class BeatTracker:
 	# TODO
 	beats: list[Beat]
 	greedy_beats: list[GreedyBeat]
-
+	timestep: float
+	sigma: float
+	lam: float
+	time_per_beat: float
+	last_prom: float
+	confidence: float
+	used: bool
 
 	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
-	def __init__(self, timestep, sigma, lam, beat_loc, time_per_beat, confidence, last_prom, beats):
+	def __init__(self, timestep: float, sigma: float, lam: float, beat_loc: float, time_per_beat: float, confidence: float, last_prom: float, beats: list[Beat]):
 		self.timestep = timestep
 		self.sigma = sigma
 		self.lam = lam
@@ -98,7 +104,7 @@ class BeatTracker:
 		self.used = False
 
 	# FIXME is this even used outside of greedy tracking?
-	def tpb(self):
+	def tpb(self) -> float:
 		if len(self.beats) > 10+SIMULATE_DATA:# FIXME FIXME FIXME 2:
 			first = max(0, len(self.beats) - 1 - 8)
 			last = len(self.beats)-1
@@ -107,12 +113,12 @@ class BeatTracker:
 			return self.time_per_beat
 
 	# returns interval where beats are expected as (begin, end) tuple; unit = timesteps
-	def search_interval(self):
+	def search_interval(self) -> tuple[float, float]:
 		expected_loc = self.beat_loc + self.time_per_beat
 		win_timesteps = self.sigma * 4
 		return (expected_loc - win_timesteps, expected_loc+win_timesteps)
 
-	def next_beat(self, peak_locs, peak_prominences):
+	def next_beat(self, peak_locs: Sequence[float], peak_prominences: Sequence[float]) -> list[BeatTracker]:
 		if self.time_per_beat < 50/1000/self.timestep:
 			# kill degenerate beat detectors that suggest an infinite tempo
 			return []
@@ -125,7 +131,6 @@ class BeatTracker:
 			location: float   # beat location in timesteps
 			is_not_synthetic: bool
 			prominence: float # peak prominence
-
 
 		peaks: list[Peak] = []
 		for loc, prom in zip(peak_locs, peak_prominences):
@@ -155,7 +160,7 @@ class BeatTracker:
 
 		tpb_alpha = 0.7 # 0.98
 		prom_alpha = 0.5
-		result = []
+		result: list[BeatTracker] = []
 		for p in peaks:
 			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(p.location - self.beats[-1].location)
 			conf_new = confidence * p.relevance
@@ -166,6 +171,34 @@ class BeatTracker:
 SIGMA_MS=30 # 30 is good for most stuff
 
 class BeatDetector:
+	samplerate: int
+	force_bpm: float | None
+	verbose: bool
+	samplestep: float
+	timestep_real: float
+	fft_window_size: int
+	fft_window: np.ndarray
+	fft_size: int
+	logbins: float
+	log_binning: LogBinning
+	cfar_kernel: np.ndarray
+	plot: float | None
+	step_by_step: bool
+	audio_history: np.ndarray
+	fft_history: np.ndarray
+	snr_history: Ringbuf2D
+	snrsum_history: Ringbuf1D
+	smoothing_sigma_ms: float
+	next_sample: int
+	next_peakstat_sample: int
+	next_timestep: int
+	need_tempo: bool
+	trackers: list[BeatTracker]
+	greedy_beats: list[GreedyBeat]
+	plots: SimpleNamespace
+	axs: Any
+	peakstataxs: Any
+
 	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot_seconds = None, step_by_step=False, verbose=False):
 		self.samplerate = samplerate
 		self.force_bpm = force_bpm
@@ -373,7 +406,7 @@ class BeatDetector:
 		
 		if self.next_sample >= self.next_peakstat_sample:
 			# peak stats and tempo estimation are only done every second or so (more rarely if larger chunks of audio are fed into the algorithm!)
-			self.next_peakstat_sample = self.next_sample + self.samplerate / 2
+			self.next_peakstat_sample = self.next_sample + int(self.samplerate / 2)
 
 			tt.begin('peak stats') # FIXME scales not so well
 			if self.verbose: print("Running statistics on the peaks")
@@ -409,7 +442,7 @@ class BeatDetector:
 
 						if self.plot:
 							self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
-						self.trackers = [BeatTracker(self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [(phase, False, periodicity, amplitude, amplitude)])] # FIXME FIXME FIXME
+						self.trackers = [BeatTracker(self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [Beat(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [Beat(location=phase, is_not_synthetic=False, time_per_beat=periodicity, prominence_avg=amplitude, prominence=amplitude)])] # FIXME FIXME FIXME
 
 						self.need_tempo = False
 
@@ -947,8 +980,8 @@ if args.file == 'jack':
 
 			if not args.nogui:
 				for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
-					beat = last_beatupdate_frames + i*last_beatupdate_tpb
-					window.flash(beat)
+					beat_t = last_beatupdate_frames + i*last_beatupdate_tpb
+					window.flash(beat_t)
 
 				window.set_texts(['%4.1f%% ( * %3.0f%%)' % (t.confidence*100, t.greedy_continuity*100) for t in bd.trackers[0:4]])
 				bpm = 0 if tpb is None else (60 / (tpb * bd.timestep_real))

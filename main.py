@@ -488,7 +488,7 @@ class BeatDetector:
 				if len(peaks) == 0: continue
 
 			if self.verbose: print("------------------------------------")
-			trackers_new = []
+			trackers_new: list[BeatTracker] = []
 			n_updated = 0
 			for tr in self.trackers:
 				lo, hi = tr.search_interval()
@@ -497,34 +497,35 @@ class BeatDetector:
 					n_updated += 1
 				else:
 					trackers_new.append(tr)
-			self.trackers = trackers_new
 
 			if n_updated == 0:
 				if self.verbose: print("no tracker was updated, exiting")
 				if self.verbose: print(f"(window = {window_start}..{window_end}, len = {window_end-window_start})")
-				if self.verbose: print([tr.search_interval() for tr in self.trackers])
+				if self.verbose: print([tr.search_interval() for tr in trackers_new])
 				assert False # FIXME
 
 			DEDUP_LOC_THRESHOLD_MS = 10 # FIXME or 50?
-			self.trackers.sort(key = lambda t : -t.confidence)
+			trackers_new.sort(key = lambda t : -t.confidence)
 			trackers_dedup = []
-			for i in range(len(self.trackers)):
-				tr = self.trackers[i]
-				if tr is None: continue
+			trackers_new2: list[BeatTracker|None] = list(trackers_new) # FIXME unneccessary clone
+			for i in range(len(trackers_new2)):
+				tr_: BeatTracker|None = trackers_new2[i]
+				if tr_ is None: continue
+				tr = tr_
 				loc = tr.beats[-1].location * self.timestep_real * 1000
 
-				for j in range(i+1, len(self.trackers)):
-					candidate = self.trackers[j]
+				for j in range(i+1, len(trackers_new2)):
+					candidate = trackers_new2[j]
 					if candidate is None: continue
 					candidate_loc = candidate.beats[-1].location * self.timestep_real * 1000
 
 					if abs(loc - candidate_loc) <= DEDUP_LOC_THRESHOLD_MS:
-						self.trackers[j] = None
+						trackers_new2[j] = None
 						tr.confidence += candidate.confidence
 
 				trackers_dedup.append(tr)
 
-			if self.verbose: print(f"deduplication removed {len(self.trackers)-len(trackers_dedup)} of {len(self.trackers)} trackers")
+			if self.verbose: print(f"deduplication removed {len(trackers_new2)-len(trackers_dedup)} of {len(trackers_new2)} trackers")
 			self.trackers = trackers_dedup
 
 			self.trackers.sort(key = lambda t : -t.confidence)

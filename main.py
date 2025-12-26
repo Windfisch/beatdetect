@@ -1,3 +1,5 @@
+from dataclasses import dataclass, astuple
+from typing import Self
 import soundfile as sf
 import gc
 import threading
@@ -56,7 +58,31 @@ def get_search_interval(trackers):
 
 tt = TimeTracker()
 
+# FIXME which of these are even used
+@dataclass
+class Beat:
+	location: float
+	is_not_synthetic: bool
+	time_per_beat: float
+	prominence_avg: float
+	prominence: float
+
+@dataclass
+class GreedyBeat(Beat):
+	tracker_confidence: float
+	tracker_time_per_beat: float
+
+	@classmethod
+	def from_Beat(cls, beat: Beat, tracker_confidence: float, tracker_time_per_beat: float) -> Self:
+		return cls(beat.location, beat.is_not_synthetic, beat.time_per_beat, beat.prominence_avg, beat.prominence, tracker_confidence, tracker_time_per_beat)
+
+
 class BeatTracker:
+	# TODO
+	beats: list[Beat]
+	greedy_beats: list[GreedyBeat]
+
+
 	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
 	def __init__(self, timestep, sigma, lam, beat_loc, time_per_beat, confidence, last_prom, beats):
 		self.timestep = timestep
@@ -75,7 +101,7 @@ class BeatTracker:
 		if len(self.beats) > 10+SIMULATE_DATA:# FIXME FIXME FIXME 2:
 			first = max(0, len(self.beats) - 1 - 8)
 			last = len(self.beats)-1
-			return (self.beats[last][0] - self.beats[first][0]) / (last-first)
+			return (self.beats[last].location - self.beats[first].location) / (last-first)
 		else:
 			return self.time_per_beat
 
@@ -91,21 +117,37 @@ class BeatTracker:
 			return []
 
 		expected_loc = self.beat_loc + self.time_per_beat
-		peaks = []
 
+		@dataclass
+		class Peak:
+			relevance: float  # normalized posterior probability
+			location: float   # beat location in timesteps
+			is_not_synthetic: bool
+			prominence: float # peak prominence
+
+
+		peaks: list[Peak] = []
 		for loc, prom in zip(peak_locs, peak_prominences):
 			t_diff = loc - expected_loc
 			relevance = math.exp(-0.5*(t_diff/self.sigma)**2) / (self.lam * math.exp(-self.lam * prom))
 			if loc > self.beat_loc + self.time_per_beat*0.1:
-				peaks.append((relevance, loc, True, prom))
+				peaks.append(Peak(
+					relevance=relevance,
+					location=loc,
+					is_not_synthetic=True,
+					prominence=prom))
 
-		peaks.append((1 / (self.lam * math.exp(-self.lam * self.last_prom * MIN_REL_PROMINENCE)), expected_loc, False, 0))
+		peaks.append(Peak(
+			relevance=1 / (self.lam * math.exp(-self.lam * self.last_prom * MIN_REL_PROMINENCE)),
+			location=expected_loc,
+			is_not_synthetic=False,
+			prominence=0))
 
-		relevance_sum = sum([r for r,l,f,p in peaks])
-		peaks = [(r/relevance_sum, l, f,p) for r,l,f,p in peaks]
-		peaks = sorted(peaks)[::-1]
+		# normalize peak relevances (to sum=1)
+		relevance_sum = sum([p.relevance for p in peaks])
+		for p in peaks: p.relevance /= relevance_sum
 
-		#print("sorted: ", peaks)
+		peaks = sorted(peaks, key=lambda p: p.relevance)[::-1]
 
 		alpha = 0
 		confidence = self.confidence * (1-alpha) + 1 * alpha
@@ -113,12 +155,11 @@ class BeatTracker:
 		tpb_alpha = 0.7 # 0.98
 		prom_alpha = 0.5
 		result = []
-		for rel, loc, found, prom in peaks:
-			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(loc - self.beats[-1][0])
-			conf_new = confidence * rel
-			#print(f"spawning found={found}, rel={rel}, conf={conf_new}, prom={prom}")
-			prom_new = prom_alpha*self.last_prom + (1-prom_alpha)*prom
-			result.append(BeatTracker(self.timestep, self.sigma, self.lam, loc, tpb_new, conf_new, prom_new, self.beats + [(loc, found, tpb_new, prom_new, prom)]))
+		for p in peaks:
+			tpb_new = tpb_alpha * self.time_per_beat + (1-tpb_alpha)*(p.location - self.beats[-1].location)
+			conf_new = confidence * p.relevance
+			prom_new = prom_alpha*self.last_prom + (1-prom_alpha)*p.prominence
+			result.append(BeatTracker(self.timestep, self.sigma, self.lam, p.location, tpb_new, conf_new, prom_new, self.beats + [Beat(p.location, p.is_not_synthetic, tpb_new, prom_new, p.prominence)]))
 		return result
 
 SIGMA_MS=30 # 30 is good for most stuff
@@ -161,7 +202,8 @@ class BeatDetector:
 
 		self.trackers = []
 
-		self.greedy_beats = [(0.01, False, 13.37, 13.37, 13.37, .42, 4.2*30)]*SIMULATE_DATA # FIXME FIXME FIXME[]
+		# FIXME FIXME FIXME why
+		self.greedy_beats = [GreedyBeat(0.01, False, 13.37, 13.37, 13.37, .42, 4.2*30)]*SIMULATE_DATA # FIXME FIXME FIXME
 
 		if self.plot:
 			plot_timesteps = int(plot_seconds / self.timestep_real)
@@ -215,8 +257,14 @@ class BeatDetector:
 			tracker = self.trackers[0]
 			beat = tracker.beats[-1]
 
-			print(f"shifting next beat from {beat[0]} to {timestep} while {'retaining' if new_tpb is None else 'updating'} tpb={new_tpb}; formerly {tracker.time_per_beat}={beat[2]}")
-			newbeat = (timestep, False, new_tpb if new_tpb is not None else beat[2], beat[3], beat[4])
+			print(f"shifting next beat from {beat.location} to {timestep} while {'retaining' if new_tpb is None else 'updating'} tpb={new_tpb}; formerly {tracker.time_per_beat}={beat.time_per_beat}")
+			newbeat = Beat(
+				location = timestep,
+				is_not_synthetic = False,
+				time_per_beat = new_tpb if new_tpb is not None else beat.time_per_beat,
+				prominence_avg = beat.prominence_avg,
+				prominence = beat.prominence
+			)
 			tracker.beats = [newbeat]
 			if new_tpb is not None:
 				tracker.time_per_beat = new_tpb
@@ -227,9 +275,9 @@ class BeatDetector:
 			PUNISH_DISCONTINOUS = 0.5
 
 			if len(self.greedy_beats) > 0:
-				last, tpb = self.greedy_beats[-1][0], self.greedy_beats[-1][6]
+				last, tpb = self.greedy_beats[-1].location, self.greedy_beats[-1].tracker_time_per_beat
 				for tr in self.trackers:
-					rel_distance = ((tr.beats[-1][0] - last) / tpb + 0.5) % 1 - 0.5
+					rel_distance = ((tr.beats[-1].location - last) / tpb + 0.5) % 1 - 0.5
 					tr.greedy_continuity = PUNISH_DISCONTINOUS * np.exp(- (rel_distance / 0.1) ** 2) + 1-PUNISH_DISCONTINOUS
 			else:
 				for tr in self.trackers:
@@ -237,7 +285,7 @@ class BeatDetector:
 
 			best = max(self.trackers, key = lambda tr : tr.confidence * tr.greedy_continuity)
 			if best.used == False:
-				self.greedy_beats.append(best.beats[-1] + (best.confidence, best.tpb())) # FIXME .tpb is wrong here?
+				self.greedy_beats.append(GreedyBeat.from_Beat(best.beats[-1], best.confidence, best.tpb())) # FIXME .tpb is wrong here?
 				self.greedy_beats = self.greedy_beats #FIXME FIXME FIXME [-10:] # FIXME limit
 			
 			for tr in self.trackers:
@@ -429,12 +477,12 @@ class BeatDetector:
 			for i in range(len(self.trackers)):
 				tr = self.trackers[i]
 				if tr is None: continue
-				loc = tr.beats[-1][0] * self.timestep_real * 1000
+				loc = tr.beats[-1].location * self.timestep_real * 1000
 
 				for j in range(i+1, len(self.trackers)):
 					candidate = self.trackers[j]
 					if candidate is None: continue
-					candidate_loc = candidate.beats[-1][0] * self.timestep_real * 1000
+					candidate_loc = candidate.beats[-1].location * self.timestep_real * 1000
 
 					if abs(loc - candidate_loc) <= DEDUP_LOC_THRESHOLD_MS:
 						self.trackers[j] = None
@@ -457,29 +505,29 @@ class BeatDetector:
 
 			self.update_greedy()
 
-			if self.plot and args.step_by_step:
-				trackerax.clear()
-				trackerax.set_xlim(0, args.duration)
-				trackerax.set_ylim(-0.05, 1.05)
-				trackerax2.clear()
-				trackerax2.set_xlim(0, args.duration)
-				trackerax2.set_ylim(-0.15, 1.15)
-
-				trackerax2.scatter([b[0]*self.timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
-				trackerax2.scatter([b[0]*self.timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
-
-				scatter_xs = []
-				scatter_ys = []
-				for t in self.trackers:
-					scatter_xs += [b[0]*self.timestep_real for b in t.beats]
-					scatter_ys += [t.confidence] * len(t.beats)
-
-				trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
-				trackerax.scatter(scatter_xs, scatter_ys, color='red')
-				scatter_xs_old = scatter_xs
-				scatter_ys_old = scatter_ys
-				if args.step_by_step:
-					plt.ginput()
+#			if self.plot and args.step_by_step:
+#				trackerax.clear()
+#				trackerax.set_xlim(0, args.duration)
+#				trackerax.set_ylim(-0.05, 1.05)
+#				trackerax2.clear()
+#				trackerax2.set_xlim(0, args.duration)
+#				trackerax2.set_ylim(-0.15, 1.15)
+#
+#				trackerax2.scatter([b.location*self.timestep_real for b in greedy_beats], [b[-1] for b in greedy_beats], color='green')
+#				trackerax2.scatter([b.location*self.timestep_real for b in greedy_beats], [1.07]*len(greedy_beats), color='green')
+#
+#				scatter_xs = []
+#				scatter_ys = []
+#				for t in self.trackers:
+#					scatter_xs += [b.location*self.timestep_real for b in t.beats]
+#					scatter_ys += [t.confidence] * len(t.beats)
+#
+#				trackerax.scatter(scatter_xs_old, scatter_ys_old, color='gray')
+#				trackerax.scatter(scatter_xs, scatter_ys, color='red')
+#				scatter_xs_old = scatter_xs
+#				scatter_ys_old = scatter_ys
+#				if args.step_by_step:
+#					plt.ginput()
 
 		tt.begin('done')
 
@@ -621,11 +669,8 @@ if args.file == 'jack':
 	midiclock_out = client.midi_outports.register('midiclock_out')
 
 	total_samples = 0
-	last_greedy_beat = 0
+	last_greedy_beat = 0.0
 
-	upcoming_beats = []
-	current_beats = []
-	
 	CHUNKSIZE = 1*1024 # 8192
 
 
@@ -880,12 +925,12 @@ if args.file == 'jack':
 			# FIXME this drops beats if there are more than one beat in the time frame.
 			tpb = None
 			if len(bd.greedy_beats) > 0:
-				tpb = bd.greedy_beats[-1][6]
-				if bd.greedy_beats[-1][0] != last_greedy_beat:
-					last_greedy_beat = bd.greedy_beats[-1][0]
+				tpb = bd.greedy_beats[-1].tracker_time_per_beat
+				if bd.greedy_beats[-1].location != last_greedy_beat:
+					last_greedy_beat = bd.greedy_beats[-1].location
 
-					beat_samples = int(bd.greedy_beats[-1][0] * bd.timestep_real * samplerate)
-					samples_per_beat = int(bd.greedy_beats[-1][6] * bd.timestep_real * samplerate)
+					beat_samples = int(bd.greedy_beats[-1].location * bd.timestep_real * samplerate)
+					samples_per_beat = int(bd.greedy_beats[-1].tracker_time_per_beat * bd.timestep_real * samplerate)
 
 					jackhandler.update_beats(beat_samples + our_frametime_to_jack, samples_per_beat)
 
@@ -962,43 +1007,43 @@ for i in range(math.ceil(40 * samplerate / args.chunksize)):
 #	scatter_xs = []
 #	scatter_ys = []
 #	for t in trackers:
-#		scatter_xs += [b[0]*timestep_real for b in t.beats]
+#		scatter_xs += [b.location*timestep_real for b in t.beats]
 #		scatter_ys += [t.confidence] * len(t.beats)
 #	trackerax.scatter(scatter_xs, scatter_ys, color='red')
 
 for t in bd.trackers:
-	mbt = (t.beats[-1][0] - t.beats[0][0]) / (len(t.beats)-1)
+	mbt = (t.beats[-1].location - t.beats[0].location) / (len(t.beats)-1)
 	mbpm = (60/mbt/bd.timestep_real)
 	print("tracker suggests %.2f bpm" % mbpm)
 
-beats=np.array( bd.trackers[0].beats ) # FIXME proper getter
+beats=bd.trackers[0].beats # FIXME proper getter
 greedy_beats = bd.greedy_beats
 timestep_real = bd.timestep_real
 
-print("%.2f%%" % (len([1 for b in beats if b[1]]) / len(beats)*100))
+print("%.2f%%" % (len([1 for b in beats if b.is_not_synthetic]) / len(beats)*100))
 
 
-mean_beat_time = (beats[-1][0] - beats[0][0]) / (len(beats)-1)
+mean_beat_time = (beats[-1].location - beats[0].location) / (len(beats)-1)
 
 if args.plot:
 	axs = bd.axs
 	bd.draw_plot()
-	for t,f,tpb,prom_next,prom in beats:
-		axs[2].axhline(t*timestep_real, color='red', ls='-' if f else '-.')
-		axs[2].scatter([prom_next,prom_next * MIN_REL_PROMINENCE], [(t+tpb)*timestep_real]*2, color='blue')
+	for beat in beats:
+		axs[2].axhline(beat.location*timestep_real, color='red', ls='-' if beat.is_not_synthetic else '-.')
+		axs[2].scatter([beat.prominence_avg,beat.prominence_avg * MIN_REL_PROMINENCE], [(beat.location+beat.time_per_beat)*timestep_real]*2, color='blue')
 		spanwidth = SIGMA_MS/1000*2
-		axs[2].axhspan((t+tpb)*timestep_real-spanwidth/2, (t+tpb)*timestep_real+spanwidth/2, color=("yellow", 0.2))
-		axs[2].scatter([prom], [t*timestep_real], color='red')
+		axs[2].axhspan((beat.location+beat.time_per_beat)*timestep_real-spanwidth/2, (beat.location+beat.time_per_beat)*timestep_real+spanwidth/2, color=("yellow", 0.2))
+		axs[2].scatter([beat.prominence], [beat.location*timestep_real], color='red')
 
 	for i in range(31):
-		#axs[2].axhline(beats[0][0] + i*mean_beat_time, color="green", ls='--')
+		#axs[2].axhline(beats[0].location + i*mean_beat_time, color="green", ls='--')
 		#axs[2].axhline((phase + i*periodicity)*timestep_real, color="purple", ls='--')
 		pass
 
 mean_bpm = (60/mean_beat_time/timestep_real)
 print(f"actual mean tempo = {mean_bpm:.1f}")
 
-errors = np.abs(([b[0] for b in beats] - (beats[0][0] + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
+errors = np.abs(([b.location for b in beats] - (beats[0].location + np.arange(len(beats)) * mean_beat_time)) * timestep_real)
 errors_ms = errors*1000
 
 print(f"beat errors: mean = {np.mean(errors_ms):.1f}ms, median = {np.median(errors_ms):.1f}ms, q90 = {np.quantile(errors_ms, 0.9):.1f}ms, max = {np.max(errors_ms):.1f}ms")
@@ -1011,8 +1056,8 @@ if args.plot:
 	bpms = []
 	ts = []
 	for (b1, b2) in zip(beats, beats[1:]):
-		t1 = b1[0] * timestep_real
-		t2 = b2[0] * timestep_real
+		t1 = b1.location * timestep_real
+		t2 = b2.location * timestep_real
 		bpm = 60 / (t2-t1)
 		ts.append((t1+t2)/2)
 		bpms.append(bpm)
@@ -1023,7 +1068,7 @@ tt.print_stats()
 
 print("writing out.mp3")
 
-def write_debugout(filename, data_orig, beats):
+def write_debugout[T: Beat](filename, data_orig, beats: list[T]):
 	data_debug = data_orig.copy()
 	data_debug /= np.max(data_debug)
 
@@ -1045,23 +1090,21 @@ def write_debugout(filename, data_orig, beats):
 
 	time_fixup_s = 0
 	for i, beat in enumerate(beats):
-		#if i%2 == 1 and t > 40_000: continue
-		t = beat[0]
-		f = beat[1]
-		beep = beep1 if f else beep2
-		t = int((t * timestep_real + time_fixup_s) * samplerate)
-		if t < 0: continue
-		if t + len(beep) >= data_debug.shape[0]: continue
-		data_debug[t:(t+len(beep)), :] += beep.reshape(-1, 1)
+		#if i%2 == 1 and t.location > 40_000: continue
+		beep = beep1 if beat.is_not_synthetic else beep2
+		beat.location = int((beat.location * timestep_real + time_fixup_s) * samplerate)
+		if beat.location < 0: continue
+		if beat.location + len(beep) >= data_debug.shape[0]: continue
+		data_debug[beat.location:(beat.location+len(beep)), :] += beep.reshape(-1, 1)
 
 	data_debug /= (1 + max(beep))
 
 	sf.write(filename, data_debug, samplerate)
 
-def write_beats(beats, filename):
+def write_beats[T: Beat](beats: list[T], filename):
 	with open(filename, 'w') as f:
 		for b in beats:
-			f.write("%d\n" % b[0])
+			f.write("%d\n" % b.location)
 
 write_debugout("out.mp3", data_orig, beats)
 write_debugout("out_greedy.mp3", data_orig, greedy_beats)

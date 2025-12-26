@@ -10,6 +10,7 @@ class TimeTracker:
 
 	def begin(self, name):
 		if self.last_name is not None:
+			assert self.last_timestamp is not None
 			elapsed = time.time() - self.last_timestamp
 			exists = self.last_name in self.times
 			if not exists:

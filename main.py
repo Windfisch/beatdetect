@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import dataclass, astuple
 from typing import Self, Sequence, Any
 import soundfile as sf
@@ -89,6 +90,7 @@ class BeatTracker:
 	last_prom: float
 	confidence: float
 	used: bool
+	greedy_continuity: float # FIXME this does not really belong here
 
 	# both beat_loc and time_per_beat are given in timesteps, i.e. not neccessarily msec
 	def __init__(self, timestep: float, sigma: float, lam: float, beat_loc: float, time_per_beat: float, confidence: float, last_prom: float, beats: list[Beat]):
@@ -807,11 +809,11 @@ if args.file == 'jack':
 
 			CLICK_FRAMES=int(0.06 * self.client.samplerate)
 			self.click_mask[0:frames] = 0
-			if last_beatupdate_frames is not None:
-				first_relevant_beat_index = (t0 - last_beatupdate_frames - CLICK_FRAMES + self.last_beatupdate_tpb-1) // last_beatupdate_tpb
-				first_irrelevant_beat_index = (t0 + frames - last_beatupdate_frames + last_beatupdate_tpb-1) // last_beatupdate_tpb
+			if self.last_beatupdate_frames is not None:
+				first_relevant_beat_index = (t0 - self.last_beatupdate_frames - CLICK_FRAMES + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
+				first_irrelevant_beat_index = (t0 + frames - self.last_beatupdate_frames + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
 				for i in range(first_relevant_beat_index, first_irrelevant_beat_index):
-					start = last_beatupdate_frames + i*last_beatupdate_tpb - t0
+					start = self.last_beatupdate_frames + i*self.last_beatupdate_tpb - t0
 					end = start + CLICK_FRAMES
 					self.click_mask[max(0, start) : min(end, frames)] += 0.5
 

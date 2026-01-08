@@ -49,9 +49,9 @@ if args.plot:
 	import matplotlib.pyplot as plt
 	import matplotlib
 
-def get_search_interval(trackers):
-	lo = 999999
-	hi = -1
+def get_search_interval(trackers: Sequence[BeatTracker]) -> tuple[int, int]:
+	lo = 999999.0
+	hi = -1.0
 	for t in trackers:
 		l, h = t.search_interval()
 		lo = min(lo, l)
@@ -59,6 +59,12 @@ def get_search_interval(trackers):
 	return (int(lo), int(hi))
 
 tt = TimeTracker()
+
+@dataclass
+class Beatgrid:
+	time_per_beat: float # periodicity
+	beat_location: float
+	peak_height: float
 
 # FIXME which of these are even used
 @dataclass
@@ -176,7 +182,7 @@ class BeatDetector:
 	samplerate: int
 	force_bpm: float | None
 	verbose: bool
-	samplestep: float
+	samplestep: int
 	timestep_real: float
 	fft_window_size: int
 	fft_window: np.ndarray
@@ -201,7 +207,7 @@ class BeatDetector:
 	axs: Any
 	peakstataxs: Any
 
-	def __init__(self, samplerate, timestep_desired_ms = 3, fft_window_ms=25, cfar_avg_ms=50, cfar_dead_ms=10, force_bpm=None, plot_seconds = None, step_by_step=False, verbose=False):
+	def __init__(self, samplerate: int, timestep_desired_ms: float = 3, fft_window_ms: float = 25, cfar_avg_ms: float = 50, cfar_dead_ms: float = 10, force_bpm: None|float = None, plot_seconds: None|float = None, step_by_step: bool = False, verbose: bool = False):
 		self.samplerate = samplerate
 		self.force_bpm = force_bpm
 		self.verbose = verbose
@@ -242,6 +248,7 @@ class BeatDetector:
 		self.greedy_beats = [GreedyBeat(0.01, False, 13.37, 13.37, 13.37, .42, 4.2*30)]*SIMULATE_DATA # FIXME FIXME FIXME
 
 		if self.plot:
+			assert plot_seconds is not None
 			plot_timesteps = int(plot_seconds / self.timestep_real)
 			self.plots = SimpleNamespace()
 			self.plots.waterfall = np.ndarray((plot_timesteps, int(self.logbins)))
@@ -256,18 +263,18 @@ class BeatDetector:
 			fig2 = plt.figure()
 			self.peakstatax = fig2.add_subplot()
 
-	def sample_from_timestep(self, ts):
+	def sample_from_timestep(self, ts: float) -> float:
 		#self.samplestep == self.timestep_real * self.samplerate
 		#self.fft_window_size = int(fft_window_ms / 1000 * samplerate)
 		return ts * self.samplestep + self.fft_window_size / 2
 
-	def timestep_from_sample(self, s):
+	def timestep_from_sample(self, s: float) -> float:
 		return (s - self.fft_window_size/2) / self.samplestep
 	
-	def deltatimestep_from_deltasample(self, s):
+	def deltatimestep_from_deltasample(self, s: float) -> float:
 		return s / self.samplestep
 	
-	def seconds_from_timestep(self, ts):
+	def seconds_from_timestep(self, ts: float) -> float:
 		return self.sample_from_timestep(ts) / self.samplerate
 
 	def draw_plot(self):
@@ -327,7 +334,7 @@ class BeatDetector:
 			for tr in self.trackers:
 				tr.used = True
 
-	def process(self, audio):
+	def process(self, audio: np.ndarray):
 		tt.begin('concat audio history')
 		first_sample = self.next_sample
 		self.next_sample += len(audio)
@@ -437,14 +444,14 @@ class BeatDetector:
 					if missing > 0:
 						print(f"Tempo estimation pending, need {missing} more samples")
 					else:
-						periodicity, phase, amplitude = result
-						phase += (self.next_timestep - len(self.snrsum_history.get()))
-						tempo = 60/periodicity/self.timestep_real
-						print(f"Tempo estimated -> {tempo} bpm with beat at timestep {phase}")
+						assert result is not None
+						location = result.beat_location + (self.next_timestep - len(self.snrsum_history.get()))
+						tempo = 60/result.time_per_beat/self.timestep_real
+						print(f"Tempo estimated -> {tempo} bpm with beat at timestep {location}")
 
 						if self.plot:
 							self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
-						self.trackers = [BeatTracker(self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, phase, periodicity, 1, amplitude, [Beat(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [Beat(location=phase, is_not_synthetic=False, time_per_beat=periodicity, prominence_avg=amplitude, prominence=amplitude)])] # FIXME FIXME FIXME
+						self.trackers = [BeatTracker(self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, location, result.time_per_beat, 1, result.peak_height, [Beat(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [Beat(location=location, is_not_synthetic=False, time_per_beat=result.time_per_beat, prominence_avg=result.peak_height, prominence=result.peak_height)])] # FIXME FIXME FIXME
 
 						self.need_tempo = False
 
@@ -569,7 +576,8 @@ class BeatDetector:
 		tt.begin('done')
 
 
-	def estimate_tempo_and_phase(self, snr_history, force_bpm=None, plot_time_offset = 0):
+	# Returns either (a Beatgrid, 0) or (None, rows needed to compute a beatgrid)
+	def estimate_tempo_and_phase(self, snr_history: np.ndarray, force_bpm:float|None = None, plot_time_offset: float = 0) -> tuple[Beatgrid|None, int]:
 		min_bpm = 60
 		max_bpm = 300
 		correlation_window = int(5/self.timestep_real)
@@ -642,13 +650,13 @@ class BeatDetector:
 		phases = z[:phase_window].reshape(-1, periodicity).sum(axis=0) / n
 		if self.plot: axs[5].plot(np.arange(len(phases))*self.timestep_real, phases)
 
-		phase = np.argmax(phases)
-		return (periodicity, phase, phases[phase]), 0
+		phase: int = int(np.argmax(phases))
+		return Beatgrid(time_per_beat=periodicity, beat_location=phase, peak_height=phases[phase]), 0
 
-def cfar_kernel(n, guard):
+def cfar_kernel(n: int, guard: int) -> np.ndarray:
 	return np.array( [1] + [0]*guard + [-1/n]*n )
 
-def log_avg(a, bins):
+def log_avg(a: np.ndarray, bins: int) -> np.ndarray:
 	l = log(a.shape[1]) / bins
 	bins = int(bins)
 	result=np.zeros((a.shape[0], bins))
@@ -662,7 +670,7 @@ def log_avg(a, bins):
 	
 	return result
 
-def log_avg2(a, bins):
+def log_avg2(a: np.ndarray, bins: float) -> np.ndarray:
 	l = log(a.shape[1]) / bins
 	bins = int(bins)
 	result=np.zeros((a.shape[0], bins))
@@ -677,7 +685,7 @@ def log_avg2(a, bins):
 	return result
 
 class LogBinning:
-	def __init__(self, bins, fftsize):
+	def __init__(self, bins: float, fftsize: int):
 		self.borders = np.logspace(0, np.log10(fftsize)*int(bins)/bins, int(bins)+1).astype(int)
 		self.borders_end = np.maximum(self.borders[1:], self.borders[:-1]+1)
 		self.matrix = np.zeros((fftsize, int(bins)))
@@ -689,14 +697,13 @@ class LogBinning:
 				self.matrix[j, i] = 1/(end-begin)
 		self.matrix = sparse.csr_array(self.matrix) # doesn't really matter if csr or csc
 
-	def log_sum2(self, a):
+	def log_sum2(self, a: np.ndarray):
 		return a @ self.matrix
 
-def overlapping_windows(data, window, step):
+def overlapping_windows(data: np.ndarray, window: np.ndarray, step: int):
 	if len(data) < len(window):
 		return np.zeros((0, len(window)))
 	N = len(window)
-	step=int(step)
 	return np.lib.stride_tricks.as_strided(data,( (len(data)-len(window)) // step + 1, N), [data.strides[0]*step, data.strides[0]]) * window
 
 if args.file == 'jack':
@@ -810,6 +817,7 @@ if args.file == 'jack':
 			CLICK_FRAMES=int(0.06 * self.client.samplerate)
 			self.click_mask[0:frames] = 0
 			if self.last_beatupdate_frames is not None:
+				assert self.last_beatupdate_tpb is not None, "if last_beatupdate_frames is not None, then _tpb is neither"
 				first_relevant_beat_index = (t0 - self.last_beatupdate_frames - CLICK_FRAMES + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
 				first_irrelevant_beat_index = (t0 + frames - self.last_beatupdate_frames + self.last_beatupdate_tpb-1) // self.last_beatupdate_tpb
 				for i in range(first_relevant_beat_index, first_irrelevant_beat_index):

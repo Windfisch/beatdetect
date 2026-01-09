@@ -23,9 +23,6 @@ import queue
 from numpy_ringbuf import Ringbuf2D, Ringbuf1D
 from timetracker import TimeTracker
 
-SIMULATE_DATA = 30000 # FIXME FIXME FIXME
-
-
 #gc.disable()
 
 # usage: python main.py jack 0
@@ -107,13 +104,12 @@ class BeatTracker:
 		self.time_per_beat = time_per_beat
 		self.last_prom = last_prom
 		self.confidence = confidence
-		#self.beats = beats[-10:] # limit beat array size
-		self.beats = beats # FIXME FIXME FIXME
+		self.beats = beats[-10:] # limit beat array length
 		self.used = False
 
 	# FIXME is this even used outside of greedy tracking?
 	def tpb(self) -> float:
-		if len(self.beats) > 10+SIMULATE_DATA:# FIXME FIXME FIXME 2:
+		if len(self.beats) > 2:
 			first = max(0, len(self.beats) - 1 - 8)
 			last = len(self.beats)-1
 			return (self.beats[last].location - self.beats[first].location) / (last-first)
@@ -244,8 +240,8 @@ class BeatDetector:
 
 		self.trackers = []
 
-		# FIXME FIXME FIXME why
-		self.greedy_beats = [GreedyBeat(0.01, False, 13.37, 13.37, 13.37, .42, 4.2*30)]*SIMULATE_DATA # FIXME FIXME FIXME
+		self.beats = []
+		self.greedy_beats = []
 
 		if self.plot:
 			assert plot_seconds is not None
@@ -329,7 +325,7 @@ class BeatDetector:
 			best = max(self.trackers, key = lambda tr : tr.confidence * tr.greedy_continuity)
 			if best.used == False:
 				self.greedy_beats.append(GreedyBeat.from_Beat(best.beats[-1], best.confidence, best.tpb())) # FIXME .tpb is wrong here?
-				self.greedy_beats = self.greedy_beats #FIXME FIXME FIXME [-10:] # FIXME limit
+				self.greedy_beats = self.greedy_beats[-10:]
 			
 			for tr in self.trackers:
 				tr.used = True
@@ -451,6 +447,7 @@ class BeatDetector:
 
 						if self.plot:
 							self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
+						
 						self.trackers = [BeatTracker(
 							self.timestep_real,
 							SIGMA_MS/1000/self.timestep_real,
@@ -459,14 +456,14 @@ class BeatDetector:
 							tempo_result.time_per_beat,
 							1,
 							tempo_result.peak_height,
-							[Beat(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [Beat(
+							[Beat(
 								location=location,
 								is_not_synthetic=False,
 								time_per_beat=tempo_result.time_per_beat,
 								prominence_avg=tempo_result.peak_height,
 								prominence=tempo_result.peak_height
 							)]
-						)] # FIXME FIXME FIXME
+						)]
 
 						self.need_tempo = False
 

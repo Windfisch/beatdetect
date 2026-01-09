@@ -46,7 +46,9 @@ if args.plot:
 	import matplotlib.pyplot as plt
 	import matplotlib
 
+# FIXME MOVE beattracker.py
 def get_search_interval(trackers: Sequence[BeatTracker]) -> tuple[int, int]:
+	"""Returns the smallest interval which contains all of trackers' search_intervals"""
 	lo = 999999.0
 	hi = -1.0
 	for t in trackers:
@@ -57,12 +59,14 @@ def get_search_interval(trackers: Sequence[BeatTracker]) -> tuple[int, int]:
 
 tt = TimeTracker()
 
+# FIXME move beatdetector.py
 @dataclass
 class Beatgrid:
 	time_per_beat: float # periodicity
 	beat_location: float
 	peak_height: float
 
+# FIXME MOVE data.py
 # FIXME which of these are even used
 @dataclass
 class Beat:
@@ -72,6 +76,7 @@ class Beat:
 	prominence_avg: float
 	prominence: float
 
+# FIXME MOVE data.py
 @dataclass
 class GreedyBeat(Beat):
 	tracker_confidence: float
@@ -82,6 +87,7 @@ class GreedyBeat(Beat):
 		return cls(beat.location, beat.is_not_synthetic, beat.time_per_beat, beat.prominence_avg, beat.prominence, tracker_confidence, tracker_time_per_beat)
 
 
+# FIXME MOVE beattracker.py
 class BeatTracker:
 	# TODO
 	beats: list[Beat]
@@ -198,6 +204,7 @@ class BeatDetector:
 	next_timestep: int
 	need_tempo: bool
 	trackers: list[BeatTracker]
+	beats: list[Beat]
 	greedy_beats: list[GreedyBeat]
 	plots: SimpleNamespace
 	axs: Any

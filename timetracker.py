@@ -2,13 +2,18 @@ import time
 import numpy as np
 
 class TimeTracker:
-	def __init__(self):
+	last_name: None | str
+	last_timestamp: None | float
+	times: dict[str, list[float]]
+	ordered_keys: list[str]
+
+	def __init__(self) -> None:
 		self.ordered_keys = []
 		self.times = {}
 		self.last_timestamp = None
 		self.last_name = None
 
-	def begin(self, name):
+	def begin(self, name: str) -> None:
 		if self.last_name is not None:
 			assert self.last_timestamp is not None
 			elapsed = time.time() - self.last_timestamp
@@ -22,7 +27,7 @@ class TimeTracker:
 		self.last_name = name
 		self.last_timestamp = time.time()
 	
-	def print_stats(self):
+	def print_stats(self) -> None:
 		print(f"{'':50s}  {'total':>9s} ={'number':>8s} x {'average':>10s} ± {'stddev':>10s}")
 		for key in self.ordered_keys:
 			print(f"{key:50s}: {np.sum(self.times[key]):8.2f}s ={len(self.times[key]):8d} x {1000*np.average(self.times[key]):8.1f}ms ± {1000*np.std(self.times[key]):8.1f}ms")

@@ -1,12 +1,16 @@
 import numpy as np
 
 class Ringbuf2D:
-	def __init__(self, size, width, oversize_factor=2):
+	size: int
+	pos: int
+	buffer: np.ndarray
+
+	def __init__(self, size: int, width: int, oversize_factor: int = 2):
 		self.size = size
 		self.buffer = np.zeros((size * oversize_factor, width))
 		self.pos = 0
 	
-	def append(self, data):
+	def append(self, data: np.ndarray) -> None:
 		if data.shape[1] != self.buffer.shape[1]:
 			raise ValueError(f"cannot add data with width={data.shape[1]} to ringbuffer of width={self.buffer.shape[1]}")
 
@@ -21,17 +25,21 @@ class Ringbuf2D:
 		self.buffer[self.pos : self.pos+data.shape[0], :] = data
 		self.pos += data.shape[0]
 	
-	def get(self):
+	def get(self) -> np.ndarray:
 		return self.buffer[max(0, self.pos - self.size):self.pos, :]
 
 
 class Ringbuf1D:
-	def __init__(self, size, oversize_factor=2):
+	size: int
+	pos: int
+	buffer: np.ndarray
+
+	def __init__(self, size: int, oversize_factor:int = 2):
 		self.size = size
 		self.buffer = np.zeros(size * oversize_factor)
 		self.pos = 0
 	
-	def append(self, data):
+	def append(self, data: np.ndarray) -> None:
 		if len(data) > self.size:
 			data = data[-self.size:]
 
@@ -43,6 +51,6 @@ class Ringbuf1D:
 		self.buffer[self.pos : self.pos+len(data)] = data
 		self.pos += len(data)
 	
-	def get(self):
+	def get(self) -> np.ndarray:
 		return self.buffer[max(0, self.pos - self.size):self.pos]
 

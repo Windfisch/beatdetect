@@ -277,7 +277,7 @@ class BeatDetector:
 	def seconds_from_timestep(self, ts: float) -> float:
 		return self.sample_from_timestep(ts) / self.samplerate
 
-	def draw_plot(self):
+	def draw_plot(self) -> None:
 		fig, ax = plt.subplots(1,1)
 		ax.plot([x for x,y in self.plots.lambdas], [y for x,y in self.plots.lambdas])
 		for a,b in self.plots.tracker_respawns:
@@ -295,7 +295,7 @@ class BeatDetector:
 		axs[2].plot(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history.get()))*self.timestep_real, color='blue')
 		axs[2].sharey(axs[0])
 
-	def resync(self, timestep, new_tpb = None):
+	def resync(self, timestep: float, new_tpb: float|None = None) -> None:
 		if len(self.trackers) > 0:
 			tracker = self.trackers[0]
 			beat = tracker.beats[-1]
@@ -314,7 +314,7 @@ class BeatDetector:
 			tracker.beat_loc = timestep
 			self.trackers = [tracker]
 	
-	def update_greedy(self):
+	def update_greedy(self) -> None:
 			PUNISH_DISCONTINOUS = 0.5
 
 			if len(self.greedy_beats) > 0:
@@ -334,7 +334,7 @@ class BeatDetector:
 			for tr in self.trackers:
 				tr.used = True
 
-	def process(self, audio: np.ndarray):
+	def process(self, audio: np.ndarray) -> None:
 		tt.begin('concat audio history')
 		first_sample = self.next_sample
 		self.next_sample += len(audio)
@@ -419,10 +419,10 @@ class BeatDetector:
 
 			tt.begin('peak stats') # FIXME scales not so well
 			if self.verbose: print("Running statistics on the peaks")
-			result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
-			prominences = sorted(result[1]['prominences'])[::-1]
+			peaks_result = ss.find_peaks(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), height=0, distance = (0.01 / self.timestep_real), prominence=0) # FIXME distance?? remove
+			prominences = sorted(peaks_result[1]['prominences'])[::-1]
 			if len(prominences) > 0:
-				lam = 1/np.mean(prominences)
+				lam = float(1/np.mean(prominences))
 				if self.plot:
 					self.plots.lambdas.append((self.next_timestep-1, lam))
 				if self.verbose: print("lambda = %.6f" % lam)
@@ -440,18 +440,33 @@ class BeatDetector:
 					if drop > 0:
 						print(f"dropping {drop} frames from history because of warmup")
 
-					result, missing = self.estimate_tempo_and_phase(self.snr_history.get()[drop:,:], self.force_bpm, self.next_timestep - len(self.snrsum_history.get()))
-					if missing > 0:
-						print(f"Tempo estimation pending, need {missing} more samples")
+					tempo_result, tempo_missing = self.estimate_tempo_and_phase(self.snr_history.get()[drop:,:], self.force_bpm, self.next_timestep - len(self.snrsum_history.get()))
+					if tempo_missing > 0:
+						print(f"Tempo estimation pending, need {tempo_missing} more samples")
 					else:
-						assert result is not None
-						location = result.beat_location + (self.next_timestep - len(self.snrsum_history.get()))
-						tempo = 60/result.time_per_beat/self.timestep_real
+						assert tempo_result is not None
+						location = tempo_result.beat_location + (self.next_timestep - len(self.snrsum_history.get()))
+						tempo = 60/tempo_result.time_per_beat/self.timestep_real
 						print(f"Tempo estimated -> {tempo} bpm with beat at timestep {location}")
 
 						if self.plot:
 							self.plots.tracker_respawns.append((self.next_timestep-len(self.snrsum_history.get()), self.next_timestep))
-						self.trackers = [BeatTracker(self.timestep_real, SIGMA_MS/1000/self.timestep_real, lam, location, result.time_per_beat, 1, result.peak_height, [Beat(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [Beat(location=location, is_not_synthetic=False, time_per_beat=result.time_per_beat, prominence_avg=result.peak_height, prominence=result.peak_height)])] # FIXME FIXME FIXME
+						self.trackers = [BeatTracker(
+							self.timestep_real,
+							SIGMA_MS/1000/self.timestep_real,
+							lam,
+							location,
+							tempo_result.time_per_beat,
+							1,
+							tempo_result.peak_height,
+							[Beat(0.01-999, False, 13.37, 13.37, 13.37)]*SIMULATE_DATA + [Beat(
+								location=location,
+								is_not_synthetic=False,
+								time_per_beat=tempo_result.time_per_beat,
+								prominence_avg=tempo_result.peak_height,
+								prominence=tempo_result.peak_height
+							)]
+						)] # FIXME FIXME FIXME
 
 						self.need_tempo = False
 
@@ -697,10 +712,10 @@ class LogBinning:
 				self.matrix[j, i] = 1/(end-begin)
 		self.matrix = sparse.csr_array(self.matrix) # doesn't really matter if csr or csc
 
-	def log_sum2(self, a: np.ndarray):
+	def log_sum2(self, a: np.ndarray) -> np.ndarray:
 		return a @ self.matrix
 
-def overlapping_windows(data: np.ndarray, window: np.ndarray, step: int):
+def overlapping_windows(data: np.ndarray, window: np.ndarray, step: int) -> np.ndarray:
 	if len(data) < len(window):
 		return np.zeros((0, len(window)))
 	N = len(window)
@@ -719,7 +734,21 @@ if args.file == 'jack':
 
 
 	class JackHandler:
-		def __init__(self, client):
+		client: jack.Client
+		event: threading.Event
+		ringbuf_in: jack.RingBuffer
+		ringbuf_beats: jack.RingBuffer
+		last_beatupdate_frames: int | None # [audio frames]
+		last_beatupdate_tpb: int | None    # [audio frames]
+		click_mask: np.ndarray
+		clicks: list[int]
+		n_clicks: int
+		SINE_PERIOD_FRAMES: int
+		sine: np.ndarray
+		MIDI_CLOCK: list[int]
+		midi_clock_generator: ClockGenerator
+
+		def __init__(self, client: jack.Client):
 			self.client = client
 			self.event = threading.Event()
 			self.ringbuf_in = jack.RingBuffer(max(2**16, 4*CHUNKSIZE)*4)
@@ -734,7 +763,7 @@ if args.file == 'jack':
 			self.MIDI_CLOCK=[0xF8]
 			self.midi_clock_generator = ClockGenerator(24, min_delta = 10)
 
-		def read_input(self, chunksize):
+		def read_input(self, chunksize: int) -> tuple[int, bytes]:
 			assert chunksize > 0
 
 			data = bytes()
@@ -749,9 +778,10 @@ if args.file == 'jack':
 				#assert time == t0 + len(data) // 4
 				data += one_audio
 
+			assert t0 is not None, "t0 cannot be none because chunksize>0 means that the loop above has set t0 at least once"
 			return t0, data
 
-		def read_one_input_segment(self):
+		def read_one_input_segment(self) -> tuple[int, bytes]:
 			self.event.clear()
 
 			while self.ringbuf_in.read_space < 8:
@@ -775,19 +805,21 @@ if args.file == 'jack':
 
 			return time, audio
 
-		def update_beats(self, time, tpb):
+		# time: time of the next beat [frames]
+		# tpb: time between beats [frames]
+		def update_beats(self, time: int, tpb: int) -> None:
 			if self.ringbuf_beats.write_space >= 16:
 				self.ringbuf_beats.write(int.to_bytes(time, 8, 'little'))
 				self.ringbuf_beats.write(int.to_bytes(tpb, 8, 'little'))
 			else:
 				print("not enough space in ringbuf_beats")
 
-		def process(self, frames):
+		def process(self, frames: int) -> None:
 			if frames == 0: return
 
-			t0 = self.client.last_frame_time
-				
-			midi_outport = self.client.midi_outports[0]
+			t0: int = self.client.last_frame_time
+
+			midi_outport: jack.MidiPort = self.client.midi_outports[0]
 			midi_outport.clear_buffer()
 
 			inbuf = self.client.inports[0].get_buffer()
@@ -833,25 +865,25 @@ if args.file == 'jack':
 
 	jackhandler = JackHandler(client)
 
-	@client.set_process_callback
-	def process(frames):
+	@client.set_process_callback # type: ignore[untyped-decorator]
+	def process(frames: int) -> None:
 		global jackhandler
 		jackhandler.process(frames)
 
 	@client.set_shutdown_callback
-	def on_shutdown(status, reason):
+	def on_shutdown(status, reason): # type: ignore[no-untyped-def]
 		print(f"shutting down. {reason}")
 	
 	@client.set_xrun_callback
-	def on_xrun(usecs):
+	def on_xrun(usecs): # type: ignore[no-untyped-def]
 		print(f"XRUN {usecs}us")
 
 	@client.set_samplerate_callback
-	def on_samplerate(samplerate):
+	def on_samplerate(samplerate): # type: ignore[no-untyped-def]
 		print(f"SAMPLE RATE CHANGE {samplerate}")
 
 	@client.set_blocksize_callback
-	def on_blocksize(blocksize):
+	def on_blocksize(blocksize): # type: ignore[no-untyped-def]
 		print(f"BLOCKSIZE CHANGE {blocksize}")
 
 
@@ -864,14 +896,22 @@ if args.file == 'jack':
 		samples_per_beat: int|None
 
 	class MyFrame(wx.Frame):
-		def __init__(self, jackclient):
+		tap_btn: wx.Button
+		jackclient: jack.Client
+		taps: queue.Queue[Tap]
+		tap_history: list[int] # list of timepoints [audio frames]
+		labels: list[wx.StaticText]
+		tempolabel: wx.StaticText
+		infolabel: wx.StaticText
+
+		def __init__(self, jackclient: jack.Client):
 			wx.Frame.__init__(self, None, wx.ID_ANY, "beatdetect")
 
 			self.tap_btn = wx.Button(self, label="tap")
 			self.tap_btn.SetOwnBackgroundColour(wx.BLUE)
 			self.tap_btn.Bind(wx.EVT_LEFT_DOWN,self.on_tap)
 			self.jackclient = jackclient
-			self.taps: queue.Queue[Tap] = queue.Queue(maxsize=100)
+			self.taps = queue.Queue(maxsize=100)
 			self.tap_history = []
 
 			self.labels = [wx.StaticText(self, label=f'tbd #{i}') for i in range(4)]
@@ -892,7 +932,7 @@ if args.file == 'jack':
 			self.SetSizer(hbox)
 
 
-		def on_tap(self, ev):
+		def on_tap(self, ev: wx.Event) -> None:
 			ev.Skip() # because documentation on EVT_LEFT_DOWN says so
 
 			now = self.jackclient.frame_time - self.jackclient.blocksize
@@ -904,26 +944,30 @@ if args.file == 'jack':
 
 			new_samples_per_beat: int|None = None
 			if len(self.tap_history) >= 2:
-				new_samples_per_beat = (self.tap_history[-1] - self.tap_history[0]) / (len(self.tap_history)-1)
+				new_samples_per_beat = (self.tap_history[-1] - self.tap_history[0]) // (len(self.tap_history)-1)
 
 			self.taps.put(Tap(now, new_samples_per_beat))
 
-		def flash(self, when):
+		# schedules the button to flash at "when" [global audio frame time]
+		def flash(self, when: int) -> None:
 			delay_frames = when - self.jackclient.frame_time
 			delay_millis = int(delay_frames / self.jackclient.samplerate * 1000)
 			wx.CallLater(delay_millis, lambda : self.tap_btn.SetOwnBackgroundColour(wx.RED))
 			wx.CallLater(delay_millis+60, lambda : self.tap_btn.SetOwnBackgroundColour(wx.BLUE))
 
-		def set_texts(self, texts, start=0):
-			def doit():
+		# sets the debug label texts
+		def set_texts(self, texts: list[str], start:int=0) -> None:
+			def doit() -> None:
 				for label, text in zip(self.labels[start:], texts):
 					label.SetLabel(text)
 			wx.CallAfter(doit)
 
-		def set_bpm(self, bpm):
+		# sets the BPM label
+		def set_bpm(self, bpm: float) -> None:
 			wx.CallAfter(lambda : self.tempolabel.SetLabel(f"{bpm:5.1f} bpm"))
-				
-		def set_info(self, info):
+		
+		# sets the info label
+		def set_info(self, info: str) -> None:
 			wx.CallAfter(lambda : self.infolabel.SetLabel(info))
 				
 
@@ -939,10 +983,10 @@ if args.file == 'jack':
 		last_beatupdate_frames = 0
 		last_beatupdate_tpb = 48000
 		while True:
-			jack_frametime, data = jackhandler.read_input(CHUNKSIZE)
-			#print(f"got len(data) = {len(data)} bytes / {len(data)//4} samples at {jack_frametime} vs {our_frametime}")
-			assert len(data) >= CHUNKSIZE*4
-			data = np.frombuffer(data, dtype=np.float32)
+			jack_frametime, data_bytes = jackhandler.read_input(CHUNKSIZE)
+			#print(f"got len(data_bytes) bytes / {len(data_bytes)//4} samples at {jack_frametime} vs {our_frametime}")
+			assert len(data_bytes) >= CHUNKSIZE*4
+			data = np.frombuffer(data_bytes, dtype=np.float32)
 			frames = len(data)
 
 			# our audio buffer starts at jack_frametime
@@ -1115,7 +1159,7 @@ tt.print_stats()
 
 print("writing out.mp3")
 
-def write_debugout[T: Beat](filename, data_orig, beats: list[T]):
+def write_debugout[T: Beat](filename: str, data_orig: np.ndarray, beats: list[T]) -> None:
 	data_debug = data_orig.copy()
 	data_debug /= np.max(data_debug)
 
@@ -1148,7 +1192,7 @@ def write_debugout[T: Beat](filename, data_orig, beats: list[T]):
 
 	sf.write(filename, data_debug, samplerate)
 
-def write_beats[T: Beat](beats: list[T], filename):
+def write_beats[T: Beat](beats: list[T], filename: str) -> None:
 	with open(filename, 'w') as f:
 		for b in beats:
 			f.write("%d\n" % b.location)

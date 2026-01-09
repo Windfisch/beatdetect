@@ -1,7 +1,21 @@
 import math
+from typing import Callable
 
+# Consumes a stream of beats (timepoint and time between beets) via self.update_beats, and generates a (higher-frequency) stream
+# of clock ticks (n_ticks-many per beat). Extrapolates the clock where needed, and slew the generated clock tick stream to match
+# the next beat set by self.update_beats.
 class ClockGenerator:
-	def __init__(self, n_ticks, min_delta = 0.1, verbose=False):
+	n_ticks: int
+	beat_time: float
+	beat_delta: float
+	last_emitted_tick: int
+	last_emitted_time: float
+	min_delta: float
+	verbose: bool
+	last_time_to: float|None
+	
+	# n_ticks: how many clock ticks to generate per beat.
+	def __init__(self, n_ticks: int, min_delta : float = 0.1, verbose: bool = False):
 		self.n_ticks = n_ticks
 		self.beat_time = 0
 		self.beat_delta = 1
@@ -12,16 +26,20 @@ class ClockGenerator:
 
 		self.last_time_to = None
 
-	def update_beats(self, time, delta):
+	# Sets the next beat (timepoint and time-between-beats) to sync the generated clock stream onto.
+	def update_beats(self, time: float, delta: float) -> None:
 		self.beat_time = time
 		self.beat_delta = delta
 
-	def get_ticks(self, time_from, time_to):
+	# Returns the clock ticks as tuples of (timepoint, index). index denotes the tick index within the beat;
+	# index is 0 right at the beat and n_ticks-1 right before the next one.
+	def get_ticks(self, time_from: float, time_to: float) -> list[tuple[float,int]]:
 		result = []
 		self.get_ticks_cb(time_from, time_to, lambda time, tick_index : result.append((time, tick_index)))
 		return result
 
-	def get_ticks_cb(self, time_from, time_to, tick_func):
+	# Like get_ticks, but instead of returning the ticks, calls `tick_func` for every tick.
+	def get_ticks_cb(self, time_from: float, time_to: float, tick_func: Callable[[float, int], None]) -> None:
 		#assert self.last_time_to is None or time_from == self.last_time_to
 		self.last_time_to = time_to
 

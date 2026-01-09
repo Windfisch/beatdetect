@@ -1,7 +1,16 @@
 import time
 import numpy as np
+from typing import Protocol
 
-class TimeTracker:
+class TimeTrackerIface(Protocol):
+	def begin(self, name: str) -> None: ...
+	def print_stats(self) -> None: ...
+
+class NullTimeTracker(TimeTrackerIface):
+	def begin(self, name: str) -> None: pass
+	def print_stats(self) -> None: pass
+
+class TimeTracker(TimeTrackerIface):
 	last_name: None | str
 	last_timestamp: None | float
 	times: dict[str, list[float]]

@@ -703,23 +703,23 @@ class LogBinning:
 	def __init__(self, bins: float, fftsize: int):
 		self.borders = np.logspace(0, np.log10(fftsize)*int(bins)/bins, int(bins)+1).astype(int)
 		self.borders_end = np.maximum(self.borders[1:], self.borders[:-1]+1)
-		self.matrix = np.zeros((fftsize, int(bins)))
+		matrix = np.zeros((fftsize, int(bins)))
 
 		for i in range(int(bins)):
 			begin = self.borders[i]
 			end = self.borders_end[i]
 			for j in range(begin, end):
-				self.matrix[j, i] = 1/(end-begin)
-		self.matrix = sparse.csr_array(self.matrix) # doesn't really matter if csr or csc
+				matrix[j, i] = 1/(end-begin)
+		self.matrix = sparse.csr_array(matrix) # doesn't really matter if csr or csc
 
 	def log_sum2(self, a: np.ndarray) -> np.ndarray:
-		return a @ self.matrix
+		return a @ self.matrix # type: ignore[no-any-return]
 
 def overlapping_windows(data: np.ndarray, window: np.ndarray, step: int) -> np.ndarray:
 	if len(data) < len(window):
 		return np.zeros((0, len(window)))
 	N = len(window)
-	return np.lib.stride_tricks.as_strided(data,( (len(data)-len(window)) // step + 1, N), [data.strides[0]*step, data.strides[0]]) * window
+	return np.lib.stride_tricks.as_strided(data,( (len(data)-len(window)) // step + 1, N), [data.strides[0]*step, data.strides[0]]) * window # type: ignore[no-any-return]
 
 if args.file == 'jack':
 	client = jack.Client('beatdetect')
@@ -769,7 +769,7 @@ if args.file == 'jack':
 			data = bytes()
 			t0 = None
 			while len(data) // 4 < chunksize:
-				time, one_audio = self.read_one_input_segment()
+				time, one_audio = self._read_one_input_segment()
 				if t0 is None:
 					t0 = time
 				assert len(data) % 4 == 0
@@ -781,7 +781,7 @@ if args.file == 'jack':
 			assert t0 is not None, "t0 cannot be none because chunksize>0 means that the loop above has set t0 at least once"
 			return t0, data
 
-		def read_one_input_segment(self) -> tuple[int, bytes]:
+		def _read_one_input_segment(self) -> tuple[int, Any]:
 			self.event.clear()
 
 			while self.ringbuf_in.read_space < 8:
@@ -819,10 +819,10 @@ if args.file == 'jack':
 
 			t0: int = self.client.last_frame_time
 
-			midi_outport: jack.MidiPort = self.client.midi_outports[0]
+			midi_outport: jack.OwnMidiPort = self.client.midi_outports[0] # type: ignore
 			midi_outport.clear_buffer()
 
-			inbuf = self.client.inports[0].get_buffer()
+			inbuf = self.client.inports[0].get_buffer() # type: ignore
 
 			assert len(inbuf) == 4*frames
 			n = self.ringbuf_in.write(int.to_bytes(frames, 8, 'little'))
@@ -861,7 +861,7 @@ if args.file == 'jack':
 			
 			sin_offset = t0 % self.SINE_PERIOD_FRAMES
 			# FIXME this should be get_buffer
-			client.outports[0].get_array()[:] = self.sine[sin_offset : sin_offset+frames] * self.click_mask[:frames]
+			client.outports[0].get_array()[:] = self.sine[sin_offset : sin_offset+frames] * self.click_mask[:frames] # type: ignore
 
 	jackhandler = JackHandler(client)
 

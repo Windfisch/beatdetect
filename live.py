@@ -170,11 +170,34 @@ class Tap:
 	timestamp_samples: int
 	samples_per_beat: int|None
 
+# Call .tap(...) with various timestamps. Returns the time-per-beat,
+# or None on the first tap in a sequence.
+# Timestamps must be in int (to avoid float precision issues)
+class TempoTapper:
+	tap_history: list[int] # list of timepoints [audio frames]
+	timeout: int
+
+	def __init__(self, timeout: float):
+		self.tap_history = []
+		self.timeout = timeout
+
+	def tap(self, now: int) -> int|None:
+		if len(self.tap_history) > 0 and self.tap_history[-1] < now - self.timeout:
+			print(f"clearing tap history ({self.tap_history[-1]} too old for {now})")
+			self.tap_history = []
+
+		self.tap_history.append(now)
+
+		if len(self.tap_history) >= 2:
+			return (self.tap_history[-1] - self.tap_history[0]) // (len(self.tap_history)-1)
+		else:
+			return None
+
 class MyFrame(wx.Frame): #type: ignore[misc]
 	tap_btn: wx.Button
 	jackclient: jack.Client
+	tempo_tapper: TempoTapper
 	taps: queue.Queue[Tap]
-	tap_history: list[int] # list of timepoints [audio frames]
 	labels: list[wx.StaticText]
 	tempolabel: wx.StaticText
 	infolabel: wx.StaticText
@@ -186,8 +209,8 @@ class MyFrame(wx.Frame): #type: ignore[misc]
 		self.tap_btn.SetOwnBackgroundColour(wx.BLUE)
 		self.tap_btn.Bind(wx.EVT_LEFT_DOWN,self.on_tap)
 		self.jackclient = jackclient
+		self.tempo_tapper = TempoTapper(1.5*jackclient.samplerate)
 		self.taps = queue.Queue(maxsize=100)
-		self.tap_history = []
 
 		self.labels = [wx.StaticText(self, label=f'tbd #{i}') for i in range(4)]
 		self.tempolabel = wx.StaticText(self, label='tempo')
@@ -209,19 +232,9 @@ class MyFrame(wx.Frame): #type: ignore[misc]
 
 	def on_tap(self, ev: wx.Event) -> None:
 		ev.Skip() # because documentation on EVT_LEFT_DOWN says so
-
 		now = self.jackclient.frame_time - self.jackclient.blocksize
-		if len(self.tap_history) > 0 and self.tap_history[-1] < now - 1.5*self.jackclient.samplerate:
-			print(f"clearing tap history ({self.tap_history[-1]} too old for {now})")
-			self.tap_history = []
-
-		self.tap_history.append(now)
-
-		new_samples_per_beat: int|None = None
-		if len(self.tap_history) >= 2:
-			new_samples_per_beat = (self.tap_history[-1] - self.tap_history[0]) // (len(self.tap_history)-1)
-
-		self.taps.put(Tap(now, new_samples_per_beat))
+		samples_per_beat: int|None = self.tempo_tapper.tap(now)
+		self.taps.put(Tap(now, samples_per_beat))
 
 	# schedules the button to flash at "when" [global audio frame time]
 	def flash(self, when: int) -> None:

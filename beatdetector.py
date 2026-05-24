@@ -169,12 +169,18 @@ class BeatDetector:
 		axs[2].plot(sn.gaussian_filter1d(self.snrsum_history.get(), self.smoothing_sigma_ms/1000/self.timestep_real), np.arange(len(self.snr_history.get()))*self.timestep_real, color='blue')
 		axs[2].sharey(axs[0])
 
+	def tpb_to_bpm(self, tpb: float) -> float:
+		return 60 / tpb / self.timestep_real
+
 	def resync(self, timestep: float, new_tpb: float|None = None) -> None:
 		if len(self.trackers) > 0:
 			tracker = self.trackers[0]
 			beat = tracker.beats[-1]
 
-			print(f"shifting next beat from {beat.location} to {timestep} while {'retaining' if new_tpb is None else 'updating'} tpb={new_tpb}; formerly {tracker.time_per_beat}={beat.time_per_beat}")
+			if new_tpb is None:
+				print(f"shifting next beat from {beat.location} to {timestep} while retaining old tpb {tracker.time_per_beat}={beat.time_per_beat}={self.tpb_to_bpm(tracker.time_per_beat):.1f}bpm")
+			else:
+				print(f"shifting next beat from {beat.location:.2f} to {timestep:.2f} while updating tpb={new_tpb:.1f}={self.tpb_to_bpm(new_tpb):.1f}bpm; formerly {tracker.time_per_beat:.1f}={beat.time_per_beat:.1f}={self.tpb_to_bpm(tracker.time_per_beat):.1f}bpm")
 			newbeat = Beat(
 				location = timestep,
 				is_not_synthetic = False,

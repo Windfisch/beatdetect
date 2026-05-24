@@ -280,6 +280,7 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 		window.Show(True)
 		threading.Thread(target = lambda : app.MainLoop()).start()
 
+	last_our_frametime_to_jack: int = 0
 	with client:
 		print("hi")
 		our_frametime = 0
@@ -301,7 +302,11 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 
 			our_frametime_to_jack = jack_frametime - our_frametime
 			our_frametime += frames
-		
+
+			if our_frametime_to_jack != last_our_frametime_to_jack:
+				print(f"Jump in frametime detected by {our_frametime_to_jack-last_our_frametime_to_jack} samples = {(our_frametime_to_jack-last_our_frametime_to_jack)/client.samplerate:.3f} sec")
+				last_our_frametime_to_jack = our_frametime_to_jack
+
 			if enable_gui:
 				last_tap = None
 				try:
@@ -316,7 +321,10 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 				new_tpb = None if last_tap.samples_per_beat is None else (bd.deltatimestep_from_deltasample(last_tap.samples_per_beat))
 
 				bd.resync(bd.timestep_from_sample(tap_ourframes), new_tpb)
-				print("sync!")
+				if new_tpb is None:
+					print("sync!")
+				else:
+					print("sync! %3.1f bpm" % (client.samplerate / last_tap.samples_per_beat * 60))
 
 			#print(f"t = {total_samples/samplerate:5.1f}, got {frames} frames, data len is {len(data)}")
 

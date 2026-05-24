@@ -292,6 +292,11 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 			data = np.frombuffer(data_bytes, dtype=np.float32)
 			frames = len(data)
 
+			rms = np.sqrt(np.mean(np.square(data)))
+			if len(bd.trackers) == 0 and rms > 1e-3 and not bd.is_tempo_estimation_pending():
+				print("no trackers and non-silence detected, requesting tempo estimation")
+				bd.request_tempo_estimation()
+
 			# our audio buffer starts at jack_frametime
 
 			our_frametime_to_jack = jack_frametime - our_frametime

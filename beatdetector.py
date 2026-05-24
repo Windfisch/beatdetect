@@ -62,7 +62,7 @@ class BeatDetector:
 	next_sample: int
 	next_peakstat_sample: int
 	next_timestep: int
-	need_tempo: bool
+	tempo_estimation_request_time: int | None # None: no tempo estimation request; int: tempo estimation was requested at this timestamp (in timesteps)
 	trackers: list[BeatTracker]
 	beats: list[Beat]
 	greedy_beats: list[GreedyBeat]
@@ -106,7 +106,7 @@ class BeatDetector:
 		self.next_sample = 0
 		self.next_peakstat_sample = 0
 		self.next_timestep = 0
-		self.need_tempo = True
+		self.tempo_estimation_request_time = None
 
 		self.time_tracker = time_tracker if time_tracker is not None else NullTimeTracker()
 
@@ -130,6 +130,12 @@ class BeatDetector:
 			self.axs = np.ndarray.flatten(np.concat([axs1,axs2]))
 			fig2 = plt.figure()
 			self.peakstatax = fig2.add_subplot()
+
+	def is_tempo_estimation_pending(self) -> bool:
+		return self.tempo_estimation_request_time is not None
+	
+	def request_tempo_estimation(self) -> None:
+		self.tempo_estimation_request_time = self.next_timestep
 
 	def sample_from_timestep(self, ts: float) -> float:
 		#self.samplestep == self.timestep_real * self.samplerate
@@ -296,7 +302,8 @@ class BeatDetector:
 					self.plots.lambdas.append((self.next_timestep-1, lam))
 				if self.verbose: print("lambda = %.6f" % lam)
 
-				if self.need_tempo:
+				# FIXME FIXME FIXME wtf why is estimate_tempo inside this if?!
+				if self.tempo_estimation_request_time is not None:
 					tt.begin('tempo estimation')
 
 					crop_amount = 0
@@ -304,18 +311,23 @@ class BeatDetector:
 					history_first = self.next_timestep - self.snr_history.get().shape[0]
 					HISTORY_DROP = self.cfar_kernel.shape[0] + 1
 
-					drop = max(0, HISTORY_DROP - history_first)
+					# do not consider audio before this timestamp for tempo estimation
+					not_before = max(self.tempo_estimation_request_time, HISTORY_DROP)
 
-					if drop > 0:
-						print(f"dropping {drop} frames from history because of warmup")
+					drop = max(0, not_before - history_first)
+					print(f"drop={drop}, not_before-history_first = {not_before} - {history_first} = {not_before-history_first}, history len = {self.snr_history.get().shape[0]}")
 
-					tempo_result, tempo_missing = self.estimate_tempo_and_phase(self.snr_history.get()[drop:,:], self.force_bpm, self.next_timestep - len(self.snrsum_history.get()))
+					audio_for_estimate = self.snr_history.get()[drop:,:]
+					tempo_result, tempo_missing = self.estimate_tempo_and_phase(audio_for_estimate, self.force_bpm, self.next_timestep - len(audio_for_estimate))
 					if tempo_missing > 0:
 						print(f"Tempo estimation pending, need {tempo_missing} more samples")
+					elif tempo_result is None:
+						print("Tempo estimation failed :(")
+						self.tempo_estimation_request_time = None
 					else:
 						assert tempo_result is not None
 						location = tempo_result.beat_location + (self.next_timestep - len(self.snrsum_history.get()))
-						tempo = 60/tempo_result.time_per_beat/self.timestep_real
+						tempo = self.tpb_to_bpm(tempo_result.time_per_beat)
 						print(f"Tempo estimated -> {tempo} bpm with beat at timestep {location}")
 
 						if self.plot:
@@ -338,7 +350,7 @@ class BeatDetector:
 							)]
 						)]
 
-						self.need_tempo = False
+						self.tempo_estimation_request_time = None
 
 				if self.plot:
 					self.peakstatax.plot(prominences, np.arange(len(prominences))/len(prominences))
@@ -461,7 +473,10 @@ class BeatDetector:
 		tt.begin('done')
 
 
-	# Returns either (a Beatgrid, 0) or (None, rows needed to compute a beatgrid)
+	# Returns either:
+	# - (a Beatgrid, 0) if a tempo has been detected
+	# - (None, 0) if enough data was consumed but no tempo was detected (e.g. due to silence)
+	# - (None, rows needed to compute a beatgrid) if not enough data was consumed yet
 	def estimate_tempo_and_phase(self, snr_history: np.ndarray, force_bpm:float|None = None, plot_time_offset: float = 0) -> tuple[Beatgrid|None, int]:
 		min_bpm = 60
 		max_bpm = 300
@@ -500,6 +515,8 @@ class BeatDetector:
 		print("possible tempi: " + ", ".join(["%.1fbpm" % t for t in tempi]))
 
 		if force_bpm is None:
+			if len(tempi) == 0:
+				return None, 0 # no tempo found :(
 			tempo = tempi[0]
 			if tempo > 240: tempo /= 2
 		else:

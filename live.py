@@ -47,22 +47,22 @@ class JackHandler:
 		self.midi_clock_generator = ClockGenerator(24, min_delta = 10)
 
 	def register_jack_callbacks(self) -> None:
-		self.client.set_process_callback(self.process)
-		self.client.set_shutdown_callback(self.on_shutdown)
-		self.client.set_xrun_callback(self.on_xrun)
-		self.client.set_samplerate_callback(self.on_samplerate)
-		self.client.set_blocksize_callback(self.on_blocksize)
+		self.client.set_process_callback(self._process)
+		self.client.set_shutdown_callback(self._on_shutdown)
+		self.client.set_xrun_callback(self._on_xrun)
+		self.client.set_samplerate_callback(self._on_samplerate)
+		self.client.set_blocksize_callback(self._on_blocksize)
 
-	def on_shutdown(self, status, reason): # type: ignore[no-untyped-def]
+	def _on_shutdown(self, status, reason): # type: ignore[no-untyped-def]
 		print(f"shutting down. {reason}")
 	
-	def on_xrun(self, usecs): # type: ignore[no-untyped-def]
+	def _on_xrun(self, usecs): # type: ignore[no-untyped-def]
 		print(f"XRUN {usecs}us")
 
-	def on_samplerate(self, samplerate): # type: ignore[no-untyped-def]
+	def _on_samplerate(self, samplerate): # type: ignore[no-untyped-def]
 		print(f"SAMPLE RATE CHANGE {samplerate}")
 
-	def on_blocksize(self, blocksize): # type: ignore[no-untyped-def]
+	def _on_blocksize(self, blocksize): # type: ignore[no-untyped-def]
 		print(f"BLOCKSIZE CHANGE {blocksize}")
 
 	def read_input(self, chunksize: int) -> tuple[int, bytes]:
@@ -116,7 +116,7 @@ class JackHandler:
 		else:
 			print("not enough space in ringbuf_beats")
 
-	def process(self, frames: int) -> None:
+	def _process(self, frames: int) -> None:
 		if frames == 0: return
 
 		t0: int = self.client.last_frame_time

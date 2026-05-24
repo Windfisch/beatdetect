@@ -28,6 +28,7 @@ p.add_argument('--offbeat', action='store_true')
 p.add_argument('--duration', type=float, default=20)
 p.add_argument('--step-by-step', action='store_true', default=False)
 p.add_argument('--nogui', action='store_true', default=False)
+p.add_argument('--miditap', type=str, default='0x54:1', help='note:channel; note can be 123 or 0x45; channel is 1-based-indexed.')
 p.add_argument('--plot', action='store_true', default=False)
 p.add_argument('--timestep', type=float, default=1)
 p.add_argument('--chunksize', type=int, default=-1)
@@ -41,7 +42,17 @@ tt = TimeTracker()
 
 
 if args.file == 'jack':
-	run_live(args.timestep, args.bpm, not args.nogui)
+	miditap_note = None
+	miditap_channel = None
+	if args.miditap is not None:
+		n, c = args.miditap.split(':')
+		miditap_note = int(n,0)
+		miditap_channel = int(c,0) if c != '*' else 0
+		if miditap_channel == 0:
+			miditap_channel = None
+		else:
+			miditap_channel -= 1
+	run_live(args.timestep, args.bpm, not args.nogui, miditap_note, miditap_channel)
 	exit(0)
 # else
 

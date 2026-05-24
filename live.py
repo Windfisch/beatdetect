@@ -36,8 +36,18 @@ class Statistics:
 		self.values[self.i] = value
 		self.i = (self.i + 1) % self.size
 
+
+@dataclass
+class JackHandlerPorts:
+	audio_in: jack.OwnPort
+	click_out: jack.OwnPort
+	midiclock_out: jack.OwnMidiPort
+	tap_in: jack.OwnMidiPort
+	beat_out: jack.OwnMidiPort
+
 class JackHandler:
 	client: jack.Client
+	ports: JackHandlerPorts
 	event: threading.Event
 	ringbuf_in: jack.RingBuffer
 	ringbuf_beats: jack.RingBuffer # list of [(time: uint64, time_per_beat: uint64)] (pushed as flat little endian bytes)
@@ -51,6 +61,8 @@ class JackHandler:
 	SINE_PERIOD_FRAMES: int
 	sine: np.ndarray
 	MIDI_CLOCK: list[int]
+	midi_tap_noteon: list[int]
+	midi_tap_noteoff: list[int]
 	midi_clock_generator: ClockGenerator
 	miditap_note: int | None
 	miditap_channel: int | None
@@ -62,8 +74,9 @@ class JackHandler:
 	stat_time_budget_write_space: Statistics
 	stat_time_budget: Statistics
 
-	def __init__(self, client: jack.Client, miditap_note: int|None = None, miditap_channel: int|None = None):
+	def __init__(self, client: jack.Client, ports: JackHandlerPorts, miditap_note: int|None = None, miditap_channel: int|None = None):
 		self.client = client
+		self.ports = ports
 		self.process_has_thrown = False
 		self.event = threading.Event()
 		self.ringbuf_in = jack.RingBuffer(max(2**16, 4*CHUNKSIZE)*4)
@@ -78,6 +91,13 @@ class JackHandler:
 		self.SINE_PERIOD_FRAMES = int(48000//880)
 		self.sine = np.sin(np.arange(0, 1024*32) /self.SINE_PERIOD_FRAMES*2*3.141592654)
 		self.MIDI_CLOCK=[0xF8]
+		if miditap_note is not None:
+			self.midi_tap_noteon = [0x90 | (miditap_channel or 0), miditap_note, 64]
+			self.midi_tap_noteoff = [0x80 | (miditap_channel or 0), miditap_note, 0]
+		else:
+			self.midi_tap_noteon = []
+			self.midi_tap_noteoff = []
+
 		self.midi_clock_generator = ClockGenerator(24, min_delta = 10)
 		self.miditap_note = miditap_note
 		self.miditap_channel = miditap_channel
@@ -145,10 +165,12 @@ class JackHandler:
 
 		tap_timestamps: list[int] = []
 		while self.ringbuf_miditap.read_space >= 8:
+			print("read miditap")
 			tap_timestamp = int.from_bytes(self.ringbuf_miditap.peek(8), 'little')
-			if tap_timestamp < t0 + n_frames:
-				tap_timestamps.append(tap_timestamp)
-				self.ringbuf_miditap.read_advance(8)
+			if tap_timestamp >= t0 + n_frames:
+				print("WTF, tap from the future")
+			tap_timestamps.append(tap_timestamp)
+			self.ringbuf_miditap.read_advance(8)
 
 		return t0, data, tap_timestamps
 
@@ -200,33 +222,39 @@ class JackHandler:
 
 		t0: int = self.client.last_frame_time
 
-		midi_outport: jack.OwnMidiPort = self.client.midi_outports[0] # type: ignore
-		midi_outport.clear_buffer()
+		self.ports.midiclock_out.clear_buffer()
+		self.ports.beat_out.clear_buffer()
 
-		inbuf = self.client.inports[0].get_buffer() # type: ignore
+		inbuf = self.ports.audio_in.get_buffer() # type: ignore
 
 		assert len(inbuf) == 4*frames
-		n = self.ringbuf_in.write(int.to_bytes(frames, 8, 'little'))
-		assert n == 8
-		n = self.ringbuf_in.write(int.to_bytes(t0, 8, 'little'))
-		assert n == 8
-		n = self.ringbuf_in.write(inbuf)
-		assert n == frames * 4
-		self.event.set()
 
-		for timestamp, midievent in self.client.midi_inports[0].incoming_midi_events():
+		if self.ringbuf_in.write_space >= 8+8+frames*4:
+			n = self.ringbuf_in.write(int.to_bytes(frames, 8, 'little'))
+			assert n == 8
+			n = self.ringbuf_in.write(int.to_bytes(t0, 8, 'little'))
+			assert n == 8
+			n = self.ringbuf_in.write(inbuf)
+			assert n == frames * 4
+			self.event.set()
+		else:
+			pass # lost frame, this is *not good* but we can't really do anything about that.
+
+		midi_input_latency = self.client.blocksize # latency *additional* to the audio input latency
+		for timestamp, midievent in self.ports.tap_in.incoming_midi_events():
 			if len(midievent) == 3 and midievent[0][0] & 0xF0 == 0x90: # Note on
 				channel, note, velocity = midievent[0][0] & 0x0F, midievent[1][0], midievent[2][0]
 				if velocity > 0 and (channel == self.miditap_channel or self.miditap_channel is None) and note == self.miditap_note:
-					n = self.ringbuf_miditap.write(int.to_bytes(t0 + timestamp, 8, 'little'))
+					n = self.ringbuf_miditap.write(int.to_bytes(t0 + timestamp - midi_input_latency, 8, 'little'))
 					assert n == 8
 
+		output_latency = 0# self.client.blocksize
 		if self.ringbuf_beats.read_space >= 16:
 			# skip all updates but the latest
 			self.ringbuf_beats.read_advance((self.ringbuf_beats.read_space // 16 - 1) * 16)
 			# read the latest update
 			buf = self.ringbuf_beats.read(16)
-			last_beatupdate_frames = int.from_bytes(buf[0:8], 'little')
+			last_beatupdate_frames = int.from_bytes(buf[0:8], 'little') - output_latency
 			last_beatupdate_tpb = int.from_bytes(buf[8:16], 'little')
 			self.last_beatupdate_frames = last_beatupdate_frames
 			self.last_beatupdate_tpb = last_beatupdate_tpb
@@ -245,11 +273,17 @@ class JackHandler:
 				end = start + CLICK_FRAMES
 				self.click_mask[max(0, start) : min(end, frames)] += 0.5
 
-			self.midi_clock_generator.get_ticks_cb(t0, t0+frames, lambda time, _ : midi_outport.write_midi_event(int(time-t0), self.MIDI_CLOCK))
+			def tick_callback(time: float, index: int) -> None:
+				self.ports.midiclock_out.write_midi_event(int(time-t0), self.MIDI_CLOCK)
+				if index == 0 and len(self.midi_tap_noteon) > 0:
+					self.ports.beat_out.write_midi_event(int(time-t0), self.midi_tap_noteon)
+				elif index == 3 and len(self.midi_tap_noteoff) > 0:
+					self.ports.beat_out.write_midi_event(int(time-t0), self.midi_tap_noteoff)
+			self.midi_clock_generator.get_ticks_cb(t0, t0+frames, tick_callback)
 		
 		sin_offset = t0 % self.SINE_PERIOD_FRAMES
 		# FIXME this should be get_buffer
-		self.client.outports[0].get_array()[:] = self.sine[sin_offset : sin_offset+frames] * self.click_mask[:frames] # type: ignore
+		self.ports.click_out.get_array()[:] = self.sine[sin_offset : sin_offset+frames] * self.click_mask[:frames] # type: ignore
 
 		if self.ringbuf_time_budget.write_space >= 2:
 			n = self.ringbuf_time_budget.write(int.to_bytes(min(int(100*self.client.frames_since_cycle_start/frames), 0xff), 1, 'little'))
@@ -347,18 +381,24 @@ class MyFrame(wx.Frame): #type: ignore[misc]
 	# sets the info label
 	def set_info(self, info: str) -> None:
 		wx.CallAfter(lambda : self.infolabel.SetLabel(info))
-				
-def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = True) -> None:
+
+
+def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = False, miditap_note: int|None = None, miditap_channel: int|None = None) -> None:
 	client = jack.Client('beatdetect')
-	audio_in = client.inports.register('audio_in')
-	click_out = client.outports.register('click_out')
-	midiclock_out = client.midi_outports.register('midiclock_out')
-	tap_in = client.midi_inports.register('tap_in')
+
+	ports = JackHandlerPorts(
+		audio_in = client.inports.register('audio_in'),
+		click_out = client.outports.register('click_out'),
+		midiclock_out = client.midi_outports.register('midiclock_out'),
+		tap_in = client.midi_inports.register('tap_in'),
+		beat_out = client.midi_outports.register('beat_out')
+	)
 
 	total_samples = 0
 	last_greedy_beat = 0.0
 
-	jackhandler = JackHandler(client, 0x53, None)
+	print("miditap note/channel = %02x, %s" % (miditap_note, miditap_channel))
+	jackhandler = JackHandler(client, ports, miditap_note, miditap_channel)
 	jackhandler.register_jack_callbacks()
 
 	samplerate = client.samplerate

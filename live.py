@@ -16,12 +16,33 @@ from beatdetector import BeatDetector
 
 CHUNKSIZE = 1*1024 # 8192
 
+class Statistics:
+	size: int
+	values: list[float]
+	i: int
+
+	def __init__(self, size: int) -> None:
+		self.size = size
+		self.values = [0.0]*size
+		self.i = 0
+	
+	def max(self) -> float:
+		return max(self.values)
+	
+	def avg(self) -> float:
+		return sum(self.values)/self.size
+
+	def push(self, value: float) -> None:
+		self.values[self.i] = value
+		self.i = (self.i + 1) % self.size
+
 class JackHandler:
 	client: jack.Client
 	event: threading.Event
 	ringbuf_in: jack.RingBuffer
 	ringbuf_beats: jack.RingBuffer # list of [(time: uint64, time_per_beat: uint64)] (pushed as flat little endian bytes)
 	ringbuf_miditap: jack.RingBuffer # sequence of timestamps (in jack time), uint64, little endian
+	ringbuf_time_budget: jack.RingBuffer # percentage of audio frames since frame start per blocksize, uint8
 	last_beatupdate_frames: int | None # [audio frames]
 	last_beatupdate_tpb: int | None    # [audio frames]
 	click_mask: np.ndarray
@@ -34,12 +55,19 @@ class JackHandler:
 	miditap_note: int | None
 	miditap_channel: int | None
 
+	stat_in_write_space: Statistics
+	stat_beats_write_space: Statistics
+	stat_miditap_write_space: Statistics
+	stat_time_budget_write_space: Statistics
+	stat_time_budget: Statistics
+
 	def __init__(self, client: jack.Client, miditap_note: int|None = None, miditap_channel: int|None = None):
 		self.client = client
 		self.event = threading.Event()
 		self.ringbuf_in = jack.RingBuffer(max(2**16, 4*CHUNKSIZE)*4)
 		self.ringbuf_beats = jack.RingBuffer(256)
 		self.ringbuf_miditap = jack.RingBuffer(256)
+		self.ringbuf_time_budget = jack.RingBuffer(256)
 		self.last_beatupdate_frames = None
 		self.last_beatupdate_tpb = None
 		self.click_mask = np.zeros(1024*32)
@@ -51,6 +79,29 @@ class JackHandler:
 		self.midi_clock_generator = ClockGenerator(24, min_delta = 10)
 		self.miditap_note = miditap_note
 		self.miditap_channel = miditap_channel
+
+		self.stat_in_write_space = Statistics(256)
+		self.stat_beats_write_space = Statistics(256)
+		self.stat_miditap_write_space = Statistics(256)
+		self.stat_time_budget_write_space = Statistics(256)
+		self.stat_time_budget = Statistics(256)
+
+
+	def status(self) -> str:
+		self.stat_in_write_space.push(self.ringbuf_in.write_space)
+		self.stat_beats_write_space.push(self.ringbuf_beats.write_space)
+		self.stat_miditap_write_space.push(self.ringbuf_miditap.write_space)
+		self.stat_time_budget_write_space.push(self.ringbuf_time_budget.write_space)
+		while self.ringbuf_time_budget.read_space >= 1:
+			self.stat_time_budget.push(int.from_bytes(self.ringbuf_time_budget.read(1), 'little'))
+
+		return \
+			f"cpu usage avg/worst ={self.stat_time_budget.avg():3.0f}% /{self.stat_time_budget.max():3.0f}"+\
+			f" | ringbuf usage: "+\
+			f"in ={self.stat_in_write_space.avg()/self.ringbuf_in.size:3.0f}% /{self.stat_in_write_space.max()/self.ringbuf_in.size:3.0f}%, "+\
+			f"beats ={self.stat_beats_write_space.avg()/self.ringbuf_beats.size:3.0f}% /{self.stat_beats_write_space.max()/self.ringbuf_beats.size:3.0f}%, "+\
+			f"miditap ={self.stat_miditap_write_space.avg()/self.ringbuf_miditap.size:3.0f}% /{self.stat_miditap_write_space.max()/self.ringbuf_miditap.size:3.0f}%, "+\
+			f"time_budget ={self.stat_time_budget_write_space.avg()/self.ringbuf_time_budget.size:3.0f}% /{self.stat_time_budget_write_space.max()/self.ringbuf_time_budget.size:3.0f}%"
 
 	def register_jack_callbacks(self) -> None:
 		self.client.set_process_callback(self._process)
@@ -188,6 +239,10 @@ class JackHandler:
 		# FIXME this should be get_buffer
 		self.client.outports[0].get_array()[:] = self.sine[sin_offset : sin_offset+frames] * self.click_mask[:frames] # type: ignore
 
+		if self.ringbuf_time_budget.write_space >= 2:
+			n = self.ringbuf_time_budget.write(int.to_bytes(min(int(100*self.client.frames_since_cycle_start/frames), 0xff), 1, 'little'))
+			assert n == 1
+
 @dataclass
 class Tap:
 	timestamp_samples: int
@@ -313,6 +368,7 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 		last_beatupdate_frames = 0
 		last_beatupdate_tpb = 48000
 		while True:
+			#print("%s\r", jackhandler.status(), end='')
 			jack_frametime, data_bytes, miditaps = jackhandler.read_input(CHUNKSIZE)
 
 			#print(f"got len(data_bytes) bytes / {len(data_bytes)//4} samples at {jack_frametime} vs {our_frametime}")

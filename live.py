@@ -54,6 +54,7 @@ class JackHandler:
 	midi_clock_generator: ClockGenerator
 	miditap_note: int | None
 	miditap_channel: int | None
+	process_has_thrown: bool
 
 	stat_in_write_space: Statistics
 	stat_beats_write_space: Statistics
@@ -63,6 +64,7 @@ class JackHandler:
 
 	def __init__(self, client: jack.Client, miditap_note: int|None = None, miditap_channel: int|None = None):
 		self.client = client
+		self.process_has_thrown = False
 		self.event = threading.Event()
 		self.ringbuf_in = jack.RingBuffer(max(2**16, 4*CHUNKSIZE)*4)
 		self.ringbuf_beats = jack.RingBuffer(256)
@@ -104,7 +106,7 @@ class JackHandler:
 			f"time_budget ={self.stat_time_budget_write_space.avg()/self.ringbuf_time_budget.size:3.0f}% /{self.stat_time_budget_write_space.max()/self.ringbuf_time_budget.size:3.0f}%"
 
 	def register_jack_callbacks(self) -> None:
-		self.client.set_process_callback(self._process)
+		self.client.set_process_callback(self._process_wrapper)
 		self.client.set_shutdown_callback(self._on_shutdown)
 		self.client.set_xrun_callback(self._on_xrun)
 		self.client.set_samplerate_callback(self._on_samplerate)
@@ -182,6 +184,16 @@ class JackHandler:
 			self.ringbuf_beats.write(int.to_bytes(tpb, 8, 'little'))
 		else:
 			print("not enough space in ringbuf_beats")
+
+	def _process_wrapper(self, frames: int) -> None:
+		try:
+			return self._process(frames)
+		except Exception as e:
+			if not self.process_has_thrown:
+				self.process_has_thrown = True
+				raise e
+			else:
+				pass # ignore the subsequent exceptions
 
 	def _process(self, frames: int) -> None:
 		if frames == 0: return

@@ -20,7 +20,8 @@ class JackHandler:
 	client: jack.Client
 	event: threading.Event
 	ringbuf_in: jack.RingBuffer
-	ringbuf_beats: jack.RingBuffer
+	ringbuf_beats: jack.RingBuffer # list of [(time: uint64, time_per_beat: uint64)] (pushed as flat little endian bytes)
+	ringbuf_miditap: jack.RingBuffer # sequence of timestamps (in jack time), uint64, little endian
 	last_beatupdate_frames: int | None # [audio frames]
 	last_beatupdate_tpb: int | None    # [audio frames]
 	click_mask: np.ndarray
@@ -30,12 +31,15 @@ class JackHandler:
 	sine: np.ndarray
 	MIDI_CLOCK: list[int]
 	midi_clock_generator: ClockGenerator
+	miditap_note: int | None
+	miditap_channel: int | None
 
-	def __init__(self, client: jack.Client):
+	def __init__(self, client: jack.Client, miditap_note: int|None = None, miditap_channel: int|None = None):
 		self.client = client
 		self.event = threading.Event()
 		self.ringbuf_in = jack.RingBuffer(max(2**16, 4*CHUNKSIZE)*4)
 		self.ringbuf_beats = jack.RingBuffer(256)
+		self.ringbuf_miditap = jack.RingBuffer(256)
 		self.last_beatupdate_frames = None
 		self.last_beatupdate_tpb = None
 		self.click_mask = np.zeros(1024*32)
@@ -45,6 +49,8 @@ class JackHandler:
 		self.sine = np.sin(np.arange(0, 1024*32) /self.SINE_PERIOD_FRAMES*2*3.141592654)
 		self.MIDI_CLOCK=[0xF8]
 		self.midi_clock_generator = ClockGenerator(24, min_delta = 10)
+		self.miditap_note = miditap_note
+		self.miditap_channel = miditap_channel
 
 	def register_jack_callbacks(self) -> None:
 		self.client.set_process_callback(self._process)
@@ -65,7 +71,8 @@ class JackHandler:
 	def _on_blocksize(self, blocksize): # type: ignore[no-untyped-def]
 		print(f"BLOCKSIZE CHANGE {blocksize}")
 
-	def read_input(self, chunksize: int) -> tuple[int, bytes]:
+	# returns (timestamp of the first sample, samples, list of tap timestamps)
+	def read_input(self, chunksize: int) -> tuple[int, bytes, list[int]]:
 		assert chunksize > 0
 
 		data = bytes()
@@ -81,7 +88,16 @@ class JackHandler:
 			data += one_audio
 
 		assert t0 is not None, "t0 cannot be none because chunksize>0 means that the loop above has set t0 at least once"
-		return t0, data
+		n_frames = len(data) // 4
+
+		tap_timestamps: list[int] = []
+		while self.ringbuf_miditap.read_space >= 8:
+			tap_timestamp = int.from_bytes(self.ringbuf_miditap.peek(8), 'little')
+			if tap_timestamp < t0 + n_frames:
+				tap_timestamps.append(tap_timestamp)
+				self.ringbuf_miditap.read_advance(8)
+
+		return t0, data, tap_timestamps
 
 	def _read_one_input_segment(self) -> tuple[int, Any]:
 		self.event.clear()
@@ -135,6 +151,13 @@ class JackHandler:
 		assert n == frames * 4
 		self.event.set()
 
+		for timestamp, midievent in self.client.midi_inports[0].incoming_midi_events():
+			if len(midievent) == 3 and midievent[0][0] & 0xF0 == 0x90: # Note on
+				channel, note, velocity = midievent[0][0] & 0x0F, midievent[1][0], midievent[2][0]
+				if velocity > 0 and (channel == self.miditap_channel or self.miditap_channel is None) and note == self.miditap_note:
+					n = self.ringbuf_miditap.write(int.to_bytes(t0 + timestamp, 8, 'little'))
+					assert n == 8
+
 		if self.ringbuf_beats.read_space >= 16:
 			# skip all updates but the latest
 			self.ringbuf_beats.read_advance((self.ringbuf_beats.read_space // 16 - 1) * 16)
@@ -177,7 +200,7 @@ class TempoTapper:
 	tap_history: list[int] # list of timepoints [audio frames]
 	timeout: int
 
-	def __init__(self, timeout: float):
+	def __init__(self, timeout: int):
 		self.tap_history = []
 		self.timeout = timeout
 
@@ -263,11 +286,12 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 	audio_in = client.inports.register('audio_in')
 	click_out = client.outports.register('click_out')
 	midiclock_out = client.midi_outports.register('midiclock_out')
+	tap_in = client.midi_inports.register('tap_in')
 
 	total_samples = 0
 	last_greedy_beat = 0.0
 
-	jackhandler = JackHandler(client)
+	jackhandler = JackHandler(client, 0x53, None)
 	jackhandler.register_jack_callbacks()
 
 	samplerate = client.samplerate
@@ -280,6 +304,8 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 		window.Show(True)
 		threading.Thread(target = lambda : app.MainLoop()).start()
 
+	midi_tempo_tapper = TempoTapper(1.5 * client.samplerate)
+
 	last_our_frametime_to_jack: int = 0
 	with client:
 		print("hi")
@@ -287,7 +313,8 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 		last_beatupdate_frames = 0
 		last_beatupdate_tpb = 48000
 		while True:
-			jack_frametime, data_bytes = jackhandler.read_input(CHUNKSIZE)
+			jack_frametime, data_bytes, miditaps = jackhandler.read_input(CHUNKSIZE)
+
 			#print(f"got len(data_bytes) bytes / {len(data_bytes)//4} samples at {jack_frametime} vs {our_frametime}")
 			assert len(data_bytes) >= CHUNKSIZE*4
 			data = np.frombuffer(data_bytes, dtype=np.float32)
@@ -307,8 +334,14 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = T
 				print(f"Jump in frametime detected by {our_frametime_to_jack-last_our_frametime_to_jack} samples = {(our_frametime_to_jack-last_our_frametime_to_jack)/client.samplerate:.3f} sec")
 				last_our_frametime_to_jack = our_frametime_to_jack
 
+			# Handle tapping both via midi and via GUI (if enabled)
+			last_tap : Tap|None = None
+			for t in miditaps:
+				midi_tpb = midi_tempo_tapper.tap(t)
+				print("TAP ", t, " / ", midi_tpb)
+				last_tap = Tap(t, midi_tpb)
+
 			if enable_gui:
-				last_tap = None
 				try:
 					while True:
 						last_tap = window.taps.get_nowait()

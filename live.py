@@ -397,7 +397,7 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = F
 	total_samples = 0
 	last_greedy_beat = 0.0
 
-	print("miditap note/channel = %02x, %s" % (miditap_note, miditap_channel))
+	if miditap_note is not None: print("miditap note/channel = %02x, %s" % (miditap_note, miditap_channel))
 	jackhandler = JackHandler(client, ports, miditap_note, miditap_channel)
 	jackhandler.register_jack_callbacks()
 
@@ -420,7 +420,7 @@ def run_live(timestep: float, force_bpm: float|None = None, enable_gui: bool = F
 		last_beatupdate_frames = 0
 		last_beatupdate_tpb = 48000
 		while True:
-			#print("%s\r", jackhandler.status(), end='')
+			print("%s\r", jackhandler.status(), end='')
 			jack_frametime, data_bytes, miditaps = jackhandler.read_input(CHUNKSIZE)
 
 			#print(f"got len(data_bytes) bytes / {len(data_bytes)//4} samples at {jack_frametime} vs {our_frametime}")

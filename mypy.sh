@@ -1,1 +1,1 @@
-mypy  --disallow-untyped-defs  --disallow-incomplete-defs  --disallow-untyped-decorators  --warn-return-any  --strict-equality --disable-error-code=import-untyped --disable-error-code=unused-ignore --strict main.py 
+mypy  --disallow-untyped-defs  --disallow-incomplete-defs  --disallow-untyped-decorators  --warn-return-any  --strict-equality --disable-error-code=import-untyped --disable-error-code=unused-ignore --strict main.py live.py

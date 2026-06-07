@@ -248,7 +248,7 @@ class JackHandler:
 					n = self.ringbuf_miditap.write(int.to_bytes(t0 + timestamp - midi_input_latency, 8, 'little'))
 					assert n == 8
 
-		output_latency = 0# self.client.blocksize
+		output_latency = self.client.blocksize
 		if self.ringbuf_beats.read_space >= 16:
 			# skip all updates but the latest
 			self.ringbuf_beats.read_advance((self.ringbuf_beats.read_space // 16 - 1) * 16)

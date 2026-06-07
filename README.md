@@ -21,6 +21,8 @@ check the `*latency` variables in live.py for example.
 
 ## Caveats / good-to-know
 
+- The goal is not to be 100% accurate, but to be good enough to track the tempo
+  most of the time, and allow the user to guide the algorithm when tracking fails.
 - Tempo fluctuates by ±0.5bpm. Consumers that extrapolate the tempo should use
   appropriate filtering.
 - Python is not very real-time-capable. Use large buffer sizes. The additional

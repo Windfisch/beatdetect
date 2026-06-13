@@ -9,11 +9,11 @@ import scipy.sparse as sparse
 from numpy import log, exp
 from types import SimpleNamespace
 
-from numpy_ringbuf import Ringbuf2D, Ringbuf1D
-from data import Beat, GreedyBeat
+from .numpy_ringbuf import Ringbuf2D, Ringbuf1D
+from .data import Beat, GreedyBeat
 
-from beattracker import BeatTracker
-from timetracker import TimeTrackerIface, NullTimeTracker
+from .beattracker import BeatTracker
+from .timetracker import TimeTrackerIface, NullTimeTracker
 
 
 

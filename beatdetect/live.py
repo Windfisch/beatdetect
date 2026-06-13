@@ -5,13 +5,13 @@ import gc
 import threading
 import numpy as np
 import jack
-from clock_generator import ClockGenerator
 
 import wx
 import queue
 
-from data import Beat, GreedyBeat
-from beatdetector import BeatDetector
+from .clock_generator import ClockGenerator
+from .data import Beat, GreedyBeat
+from .beatdetector import BeatDetector
 
 
 CHUNKSIZE = 1*1024 # 8192

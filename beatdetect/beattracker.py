@@ -2,7 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 import math
-from data import Beat, GreedyBeat
+
+from .data import Beat, GreedyBeat
 
 MIN_REL_PROMINENCE = 0.25
 

@@ -8,12 +8,12 @@ import numpy as np
 import argparse
 
 
-from timetracker import TimeTracker
-from data import Beat, GreedyBeat
+from .timetracker import TimeTracker
+from .data import Beat, GreedyBeat
 
-from beatdetector import BeatDetector, SIGMA_MS
-from beattracker import MIN_REL_PROMINENCE # FIXME
-from live import run_live
+from .beatdetector import BeatDetector, SIGMA_MS
+from .beattracker import MIN_REL_PROMINENCE # FIXME
+from .live import run_live
 
 
 #gc.disable()

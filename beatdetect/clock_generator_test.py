@@ -2,7 +2,8 @@ import numpy as np
 import random
 import math
 import matplotlib.pyplot as plt
-from clock_generator import ClockGenerator
+
+from .clock_generator import ClockGenerator
 
 class ClockGenerator2:
 	def __init__(self, n_ticks, min_delta = 0.1):
